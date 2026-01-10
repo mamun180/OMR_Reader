@@ -12,7 +12,7 @@ from ui_about import AboutWindow
 from ui_registration import RegistrationPage
 from ui_navigation import NavigationScreen
 from theme import apply_stylesheet_and_floatation
-from license_manager import verify_license
+from license_manager import verify_license, load_license_key, decrypt_and_load_module
 from resource_path import resource_path
 
 class LicenseWorker(QObject):
@@ -46,7 +46,13 @@ class OMRApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("OptiMark Pro")
         self.setObjectName("OMRAppMainWindow")
-        self.is_licensed = False # Add license state flag
+        self.is_licensed = False 
+
+        # Page widgets will be created on-demand after license check
+        self.builder_page = None
+        self.scanner_page = None
+        self.checker_page = None
+        self.navigation_page = None
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -57,12 +63,11 @@ class OMRApp(QMainWindow):
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
 
-        self._create_tabs()
+        self._create_initial_tabs()
 
         # --- Create Bottom Info Panel ---
         self.bottom_panel = QFrame()
         self.bottom_panel.setObjectName("bottomInfoPanel")
-        # Example style to make it visible
         self.bottom_panel.setStyleSheet("#bottomInfoPanel { border-top: 1px solid #ccc; }")
         bottom_layout = QHBoxLayout(self.bottom_panel)
         bottom_layout.setContentsMargins(10, 0, 10, 0)
@@ -82,9 +87,8 @@ class OMRApp(QMainWindow):
         
         main_layout.addWidget(self.bottom_panel)
         
-        # --- Set Proportional Stretch ---
-        main_layout.setStretch(0, 98) # 95% for the tab widget
-        main_layout.setStretch(1, 2) # 5% for the bottom panel
+        main_layout.setStretch(0, 98)
+        main_layout.setStretch(1, 2)
 
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
         
@@ -97,11 +101,9 @@ class OMRApp(QMainWindow):
         self._on_tab_changed(self.tab_widget.currentIndex())
 
 
-    def _create_tabs(self):
+    def _create_initial_tabs(self):
+        """Creates the tabs that are always available, regardless of license status."""
         self.home_page_widget = self._create_home_page()
-        self.builder_page = TemplateBuilder()
-        self.scanner_page = AnswerKeyScannerWindow()
-        self.checker_page = CheckerWindow()
         self.settings_page = SettingsPage()
         
         about_scroll = QScrollArea()
@@ -110,11 +112,8 @@ class OMRApp(QMainWindow):
         self.about_page = about_scroll
         self.registration_page = RegistrationPage()
 
-        # Add all main tabs first
+        # Add non-restricted tabs
         self.tab_widget.addTab(self.home_page_widget, "Home")
-        self.tab_widget.addTab(self.builder_page, "Template Builder")
-        self.tab_widget.addTab(self.scanner_page, "Answer Key Scanner")
-        self.tab_widget.addTab(self.checker_page, "Answer Checker")
         self.tab_widget.addTab(self.settings_page, "Settings")
         self.tab_widget.addTab(self.about_page, "About")
         self.tab_widget.addTab(self.registration_page, "Registration")
@@ -122,9 +121,6 @@ class OMRApp(QMainWindow):
         # --- Add Icons to Tabs ---
         icon_map = {
             "Home": QStyle.StandardPixmap.SP_ComputerIcon,
-            "Template Builder": QStyle.StandardPixmap.SP_FileIcon,
-            "Answer Key Scanner": QStyle.StandardPixmap.SP_DialogYesButton,
-            "Answer Checker": QStyle.StandardPixmap.SP_DialogApplyButton,
             "Settings": QStyle.StandardPixmap.SP_FileDialogDetailedView,
             "About": QStyle.StandardPixmap.SP_MessageBoxInformation,
             "Registration": QStyle.StandardPixmap.SP_DialogApplyButton
@@ -133,13 +129,7 @@ class OMRApp(QMainWindow):
             tab_name = self.tab_widget.tabText(i)
             icon = self.style().standardIcon(icon_map.get(tab_name, QStyle.StandardPixmap.SP_FileIcon))
             self.tab_widget.setTabIcon(i, icon)
-
-        # Now create and insert the navigation page
-        self.navigation_page = NavigationScreen(self.tab_widget)
-        self.tab_widget.insertTab(1, self.navigation_page, "Navigation")
-        self.tab_widget.setTabIcon(1, self.style().standardIcon(QStyle.StandardPixmap.SP_DirLinkIcon))
-
-
+            
         # --- Connect Signals ---
         self.registration_page.registration_successful.connect(lambda: self.check_license(show_success_popup=True))
         self.settings_page.settings_saved.connect(self.apply_theme_to_all)
@@ -181,7 +171,7 @@ class OMRApp(QMainWindow):
 
     def _on_start_process_clicked(self):
         if self.is_licensed:
-            target_tab = "Navigation" # Changed to Navigation
+            target_tab = "Navigation"
         else:
             target_tab = "Registration"
             
@@ -190,6 +180,7 @@ class OMRApp(QMainWindow):
             self.tab_widget.setCurrentIndex(target_index)
 
     def _on_tab_changed(self, index):
+        if index == -1: return
         current_tab_name = self.tab_widget.tabText(index)
         is_home_or_nav = current_tab_name in ["Home", "Navigation"]
         self.tab_widget.tabBar().setVisible(not is_home_or_nav)
@@ -202,9 +193,9 @@ class OMRApp(QMainWindow):
 
     def apply_theme_to_all(self):
         apply_stylesheet_and_floatation(self)
-        if hasattr(self.builder_page, 'apply_theme'): self.builder_page.apply_theme()
-        if hasattr(self.scanner_page, 'apply_theme'): self.scanner_page.apply_theme()
-        if hasattr(self.checker_page, 'apply_theme'): self.checker_page.apply_theme()
+        if self.builder_page and hasattr(self.builder_page, 'apply_theme'): self.builder_page.apply_theme()
+        if self.scanner_page and hasattr(self.scanner_page, 'apply_theme'): self.scanner_page.apply_theme()
+        if self.checker_page and hasattr(self.checker_page, 'apply_theme'): self.checker_page.apply_theme()
 
     def check_license(self, show_success_popup=False):
         self.thread = QThread()
@@ -220,66 +211,105 @@ class OMRApp(QMainWindow):
     def _handle_license_result(self, is_valid, message, show_success_popup):
         self.is_licensed = is_valid
         if is_valid:
+            # Decrypt and load the core modules
+            core_omr_module = decrypt_and_load_module('core_omr')
+            corner_detector_module = decrypt_and_load_module('corner_detector')
+
+            if core_omr_module is None or corner_detector_module is None:
+                QMessageBox.critical(self, "Fatal Application Error", 
+                                     "Could not load core components. The application files may be missing, "
+                                     "corrupt, or your license is invalid for this machine.\n\nPlease reinstall the application or contact support.")
+                sys.exit(1)
+
             self.unlock_ui(show_popup=show_success_popup)
         else:
             self.lock_ui()
+            
         self.update_registration_status()
 
-
-
     def lock_ui(self):
-        """Disables features when the license is invalid."""
-        restricted_tabs = ["Template Builder", "Answer Key Scanner", "Answer Checker", "Settings"]
+        """Removes protected tabs when the license is invalid."""
+        protected_tabs = ["Navigation", "Template Builder", "Answer Key Scanner", "Answer Checker"]
+        for tab_name in protected_tabs:
+            index = self.find_tab_by_name(tab_name)
+            if index is not None:
+                self.tab_widget.removeTab(index)
         
-        for i in range(self.tab_widget.count()):
-            tab_name = self.tab_widget.tabText(i)
-            if tab_name in restricted_tabs:
-                self.tab_widget.setTabEnabled(i, False)
-            else:
-                self.tab_widget.setTabEnabled(i, True)
+        # Reset page instance variables
+        self.builder_page = None
+        self.scanner_page = None
+        self.checker_page = None
+        self.navigation_page = None
 
         self.start_button.setText("Register Application")
-        self.start_button.setEnabled(True) # Ensure button is enabled
         self.subtitle_label.setText("Application is not registered")
         self.subtitle_label.setStyleSheet("color: #d32f2f;")
 
-
     def unlock_ui(self, show_popup=False):
-        """Enables all features after a successful license validation."""
-        for i in range(self.tab_widget.count()):
-            self.tab_widget.setTabEnabled(i, True)
-            
+        """Creates and enables all features after a successful license validation."""
+        # --- Dynamically import and create pages ---
+        # This is done here because the modules they depend on (e.g., core_omr)
+        # only exist in memory after a successful, decrypted load.
+        from ui_builder import TemplateBuilder
+        from ui_answer_key_scanner import AnswerKeyScannerWindow
+        from ui_checker import CheckerWindow
+        from ui_navigation import NavigationScreen
+
+        # Create pages only if they haven't been created yet
+        if self.navigation_page is None:
+            self.navigation_page = NavigationScreen(self.tab_widget)
+            self.tab_widget.insertTab(1, self.navigation_page, "Navigation")
+
+        if self.builder_page is None:
+            self.builder_page = TemplateBuilder()
+            self.tab_widget.addTab(self.builder_page, "Template Builder")
+
+        if self.scanner_page is None:
+            self.scanner_page = AnswerKeyScannerWindow()
+            self.tab_widget.addTab(self.scanner_page, "Answer Key Scanner")
+
+        if self.checker_page is None:
+            self.checker_page = CheckerWindow()
+            self.tab_widget.addTab(self.checker_page, "Answer Checker")
+
+        # --- Apply Icons ---
+        icon_map = {
+            "Navigation": QStyle.StandardPixmap.SP_DirLinkIcon,
+            "Template Builder": QStyle.StandardPixmap.SP_FileIcon,
+            "Answer Key Scanner": QStyle.StandardPixmap.SP_DialogYesButton,
+            "Answer Checker": QStyle.StandardPixmap.SP_DialogApplyButton,
+        }
+        for tab_name, icon_enum in icon_map.items():
+            index = self.find_tab_by_name(tab_name)
+            if index is not None:
+                self.tab_widget.setTabIcon(index, self.style().standardIcon(icon_enum))
+        
         self.start_button.setText("Start the Process")
-        self.start_button.setEnabled(True)
         self.subtitle_label.setText("OMR Sheet Scanner")
         self.subtitle_label.setStyleSheet("")
         
         if show_popup:
             QMessageBox.information(self, "Success", "License activated successfully. All features are now enabled.")
+        
+        self.apply_theme_to_all()
 
     def update_registration_status(self):
-        # Create a worker to check the license status in the background
         self.reg_status_thread = QThread()
         self.reg_status_worker = LicenseWorker()
         self.reg_status_worker.moveToThread(self.reg_status_thread)
         
-        # Connect signals
         self.reg_status_thread.started.connect(self.reg_status_worker.check)
         self.reg_status_worker.finished.connect(lambda is_valid, message, show_popup: self._handle_reg_status_update(is_valid, message))
         self.reg_status_worker.finished.connect(self.reg_status_thread.quit)
         self.reg_status_worker.finished.connect(self.reg_status_worker.deleteLater)
         self.reg_status_thread.finished.connect(self.reg_status_thread.deleteLater)
         
-        # Start the thread
         self.reg_status_thread.start()
 
     def closeEvent(self, event):
         """Save settings before the application closes."""
-        self.checker_page.save_settings()
-        # You can add calls to save settings for other pages here as well
-        # self.builder_page.save_settings()
-        # self.scanner_page.save_settings()
-        # self.settings_page.save_settings()
+        if self.checker_page:
+            self.checker_page.save_settings()
         super().closeEvent(event)
 
     def _handle_reg_status_update(self, is_valid, message):

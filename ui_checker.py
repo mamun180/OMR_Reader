@@ -340,6 +340,8 @@ class CheckerWindow(QWidget):
         self.main_layout.addWidget(self.main_v_splitter)
 
         settings = QSettings("OptiMark Pro", "Defaults")
+        button_color_name = settings.value("button_color", "#FFFFFF")
+        self.button_theme_color = QColor(button_color_name)
         
         self.left_panel_widget = QWidget()
         self.left_panel_widget.setObjectName("left_panel_widget")
@@ -1395,18 +1397,19 @@ class CheckerWindow(QWidget):
         selected_columns = self.active_output_pattern.get('selected_columns', [])
         
         preview_parts = []
+        color_hex = self.button_theme_color.name()
         for col_name in selected_columns:
             if col_name == "Student Answers (per question)":
                 for q_num in sorted(current_answers.keys(), key=int):
                     value = all_data.get(f"Q{q_num}", "")
-                    preview_parts.append(f"<b>Q{q_num}</b>: {value}")
+                    preview_parts.append(f"<font color='{color_hex}'><b>Q{q_num}</b></font>: {value}")
             elif col_name == "Correctness Status (per question)":
                 for q_num in sorted(current_answers.keys(), key=int):
                     value = all_data.get(f"Q{q_num}_Correct", "")
-                    preview_parts.append(f"<b>Q{q_num}_Correct</b>: {value}")
+                    preview_parts.append(f"<font color='{color_hex}'><b>Q{q_num}_Correct</b></font>: {value}")
             elif col_name in all_data:
                 value = str(all_data.get(col_name, ''))
-                preview_parts.append(f"<b>{col_name}</b>: {value}")
+                preview_parts.append(f"<font color='{color_hex}'><b>{col_name}</b></font>: {value}")
         
         preview_text = "; ".join(preview_parts)
         self.result_preview_label.setText(f"Output Preview: {preview_text}")

@@ -5,6 +5,11 @@ import os
 import json
 import requests
 import base64
+import sys
+import importlib.util
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -157,3 +162,64 @@ def verify_license():
             return False, "Server returned an invalid response."
         except Exception as e:
             return False, f"An unexpected error occurred during online verification: {e}"
+
+def _get_encryption_key():
+    """
+    Derives a static cryptographic key from a fixed password.
+    This key is used for decrypting the core application modules.
+    """
+    password = b'_Your_Secret_Password_Here_Change_Me_!' # IMPORTANT: Change this to your own secret phrase
+    salt = b'_omr_checker_salt_' 
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=480000,
+        backend=default_backend()
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(password))
+    return key
+
+def decrypt_and_load_module(module_name):
+    """
+    Decrypts a module's source from a .py.enc file and loads it into memory.
+    Returns the loaded module on success, None on failure.
+    """
+    try:
+        # For a bundled app (PyInstaller), resources are in a temp directory (_MEIPASS).
+        # For local development, they are in the same directory.
+        base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        encrypted_file_path = os.path.join(base_path, f"{module_name}.py.enc")
+
+        if not os.path.exists(encrypted_file_path):
+            raise FileNotFoundError(f"Encrypted module {encrypted_file_path} not found.")
+
+        with open(encrypted_file_path, 'rb') as f:
+            encrypted_data = f.read()
+
+        # Get the static decryption key and decrypt the module source
+        key = _get_encryption_key()
+        fernet = Fernet(key)
+        decrypted_source = fernet.decrypt(encrypted_data)
+
+        # Create a module spec and execute the decrypted code in its namespace
+        spec = importlib.util.spec_from_loader(module_name, loader=None)
+        module = importlib.util.module_from_spec(spec)
+        exec(decrypted_source, module.__dict__)
+        
+        # Crucially, add the newly loaded module to sys.modules. This makes subsequent
+        # imports of this module (e.g., "import core_omr") work application-wide.
+        sys.modules[module_name] = module
+        
+        print(f"Successfully decrypted and loaded module: {module_name}")
+        return module
+    except FileNotFoundError as e:
+        print(f"FATAL ERROR: {e}")
+        return None
+    except Exception as e:
+        # This will catch various errors, including cryptography.fernet.InvalidToken,
+        # which occurs if the decryption key is wrong.
+        print(f"FATAL ERROR: Failed to decrypt or load module '{module_name}'. "
+              f"The file may be corrupt or was encrypted with a different key. Details: {e}")
+        return None
+
