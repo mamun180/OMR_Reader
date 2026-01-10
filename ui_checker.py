@@ -534,7 +534,7 @@ class CheckerWindow(QWidget):
             self.ans_key_status_label.setText(f"Active: {key_name}")
         else:
             self.ans_key_combobox.setCurrentIndex(0) # Back to "Select..."
-
+            self.ans_key_status_label.setText(f"Multiple keys ({len(paths)}) loaded")
         self.ans_key_combobox.blockSignals(False)
 
     def _review_selected_key(self):
@@ -565,6 +565,41 @@ class CheckerWindow(QWidget):
         self.answers_layout.addLayout(nav_layout)
 
         self.show_current_review_key()
+
+    def _select_all_answer_keys(self, checked):
+        if checked:
+            self.ans_key_combobox.setEnabled(False)
+            answer_key_dir = get_answer_key_dir()
+            if answer_key_dir and os.path.isdir(answer_key_dir):
+                try:
+                    paths = [os.path.join(answer_key_dir, f) for f in os.listdir(answer_key_dir) if f.endswith('.json')]
+                    if paths:
+                        self._load_answer_keys(paths)
+                        self.ans_key_status_label.setText(f"Loaded {len(paths)} keys from directory.")
+                        self.btn_review_keys.setEnabled(True) # Enable review button after loading
+                    else:
+                        self.show_toast("No answer keys (.json) found in the directory.", 'warning')
+                        self.select_all_keys_checkbox.setChecked(False) # Uncheck if no keys were found
+                        self.btn_review_keys.setEnabled(False) # Disable if no keys were found
+                except OSError as e:
+                    self.log(f"Error reading answer key directory: {e}")
+                    self.show_toast(f"Error accessing answer key directory: {e}", 'error')
+                    self.select_all_keys_checkbox.setChecked(False) # Uncheck on error
+                    self.btn_review_keys.setEnabled(False) # Disable on error
+            else:
+                self.show_toast("Answer key directory is not set or not found.", 'error')
+                self.select_all_keys_checkbox.setChecked(False) # Uncheck if dir is not there
+                self.btn_review_keys.setEnabled(False) # Disable if dir is not found
+        else:
+            self.ans_key_combobox.setEnabled(True)
+            self.btn_review_keys.setEnabled(False) # Disable when unchecked and clearing keys
+            self.answer_key_data = []
+            self.template_data = None
+            self.populate_answer_key_combobox()
+            self._create_right_panel_widgets()
+            self._populate_identifier_checkboxes()
+            self.ans_key_status_label.setText("No key loaded.")
+            self.log("Cleared all loaded answer keys.")
 
     def show_current_review_key(self):
         if not self.review_widgets:
@@ -716,6 +751,10 @@ class CheckerWindow(QWidget):
         self.btn_review_keys.clicked.connect(self._review_selected_key)
         ans_key_selection_layout.addWidget(self.btn_review_keys)
         source_selection_layout.addLayout(ans_key_selection_layout)
+
+        self.select_all_keys_checkbox = QCheckBox("Select all answer keys")
+        self.select_all_keys_checkbox.toggled.connect(self._select_all_answer_keys)
+        source_selection_layout.addWidget(self.select_all_keys_checkbox)
 
         self.ans_key_status_label = QLabel("")
         self.ans_key_status_label.setWordWrap(True)
