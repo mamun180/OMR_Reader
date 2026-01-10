@@ -248,18 +248,12 @@ class OMRApp(QMainWindow):
     def unlock_ui(self, show_popup=False):
         """Creates and enables all features after a successful license validation."""
         # --- Dynamically import and create pages ---
-        # This is done here because the modules they depend on (e.g., core_omr)
-        # only exist in memory after a successful, decrypted load.
         from ui_builder import TemplateBuilder
         from ui_answer_key_scanner import AnswerKeyScannerWindow
         from ui_checker import CheckerWindow
         from ui_navigation import NavigationScreen
 
-        # Create pages only if they haven't been created yet
-        if self.navigation_page is None:
-            self.navigation_page = NavigationScreen(self.tab_widget)
-            self.tab_widget.insertTab(1, self.navigation_page, "Navigation")
-
+        # Create main pages first
         if self.builder_page is None:
             self.builder_page = TemplateBuilder()
             self.tab_widget.addTab(self.builder_page, "Template Builder")
@@ -271,6 +265,11 @@ class OMRApp(QMainWindow):
         if self.checker_page is None:
             self.checker_page = CheckerWindow()
             self.tab_widget.addTab(self.checker_page, "Answer Checker")
+
+        # Now, create the navigation page which depends on the others
+        if self.navigation_page is None:
+            self.navigation_page = NavigationScreen(self.tab_widget)
+            self.tab_widget.insertTab(1, self.navigation_page, "Navigation")
 
         # --- Apply Icons ---
         icon_map = {
