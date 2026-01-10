@@ -1,0 +1,282 @@
+{
+    "corner_properties": {
+        "area_min": 778.05,
+        "area_max": 1444.95,
+        "aspect_ratio_min": 0.85,
+        "aspect_ratio_max": 1.15,
+        "num_vertices": 4
+    },
+    "template_corners": [
+        [
+            188.0,
+            110.0
+        ],
+        [
+            1383.0,
+            109.0
+        ],
+        [
+            1382.0,
+            2050.0
+        ],
+        [
+            188.0,
+            2017.0
+        ]
+    ],
+    "box_points_relative": [
+        {
+            "x": -47.79010009765625,
+            "y": 349.1874084472656
+        },
+        {
+            "x": 1326.266845703125,
+            "y": 349.1874084472656
+        },
+        {
+            "x": 1322.7615966796875,
+            "y": 1817.8861083984375
+        },
+        {
+            "x": -54.80059814453125,
+            "y": 1800.35986328125
+        }
+    ],
+    "rois": [
+        {
+            "type": "Answer",
+            "name": "Q1",
+            "x": 221.9013214111328,
+            "y": 515.4732666015625,
+            "width": 189.29251098632812,
+            "height": 1357.375244140625,
+            "rows": "25",
+            "cols": "4",
+            "order": "Row Wise",
+            "values": [
+                "A",
+                "B",
+                "C",
+                "D"
+            ],
+            "subtype": "Answer Script Identifier",
+            "start_question": 1,
+            "end_question": 25,
+            "correct_mark": "1",
+            "wrong_mark": "0"
+        },
+        {
+            "type": "Answer",
+            "name": "Q2",
+            "x": 513.1702880859375,
+            "y": 517.5971069335938,
+            "width": 190.26211547851562,
+            "height": 1358.86572265625,
+            "rows": "25",
+            "cols": "4",
+            "order": "Row Wise",
+            "values": [
+                "A",
+                "B",
+                "C",
+                "D"
+            ],
+            "subtype": "Answer Script Identifier",
+            "start_question": 26,
+            "end_question": 50,
+            "correct_mark": "1",
+            "wrong_mark": "0"
+        },
+        {
+            "type": "Identifier",
+            "name": "Exam",
+            "x": 756.4051513671875,
+            "y": 1490.8011474609375,
+            "width": 44.001731872558594,
+            "height": 392.6461486816406,
+            "rows": "8",
+            "cols": "1",
+            "order": "Column Wise",
+            "values": [
+                "Half_yearly",
+                "Pre_Test",
+                "Yearly",
+                "Test",
+                "Modet_Test",
+                "Quiz_Test",
+                "Class_Test",
+                "Others"
+            ],
+            "subtype": "Answer Script Identifier"
+        },
+        {
+            "type": "Identifier",
+            "name": "Class",
+            "x": 738.369873046875,
+            "y": 973.4380493164062,
+            "width": 41.94831085205078,
+            "height": 430.6702880859375,
+            "rows": "7",
+            "cols": "1",
+            "order": "Column Wise",
+            "values": [
+                "Six",
+                "Seven",
+                "Eight",
+                "Nine",
+                "Ten",
+                "Eleven",
+                "Twelve"
+            ],
+            "subtype": "Answer Script Identifier"
+        },
+        {
+            "type": "Identifier",
+            "name": "Section",
+            "x": 877.2748413085938,
+            "y": 970.0814819335938,
+            "width": 40.046905517578125,
+            "height": 438.15869140625,
+            "rows": "8",
+            "cols": "1",
+            "order": "Column Wise",
+            "values": [
+                "A",
+                "B",
+                "C",
+                "D",
+                "E",
+                "F",
+                "G",
+                "H"
+            ],
+            "subtype": "Student Identifier"
+        },
+        {
+            "type": "Identifier",
+            "name": "Roll",
+            "x": 980.168212890625,
+            "y": 1043.239990234375,
+            "width": 284.4637145996094,
+            "height": 368.2264404296875,
+            "rows": "10",
+            "cols": "6",
+            "order": "Column Wise",
+            "values": [
+                 "0",
+                "1",
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8",
+                "9"
+            ],
+            "subtype": "Student Identifier"
+        },
+        {
+            "type": "Identifier",
+            "name": "Subject_Code",
+            "x": 1282.6737060546875,
+            "y": 1042.7802734375,
+            "width": 135.22711181640625,
+            "height": 368.95404052734375,
+            "rows": "10",
+            "cols": "3",
+            "order": "Column Wise",
+            "values": [
+                "0",
+                "1",
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8",
+                "9"
+            ],
+            "subtype": "Answer Script Identifier"
+        },
+        {
+            "type": "Identifier",
+            "name": "Set_Code",
+            "x": 1446.9808349609375,
+            "y": 1111.62548828125,
+            "width": 36.40346145629883,
+            "height": 271.2553405761719,
+            "rows": "4",
+            "cols": "1",
+            "order": "Column Wise",
+            "values": [
+                "A",
+                "B",
+                "C",
+                "D"
+            ],
+            "subtype": "Answer Script Identifier"
+        },
+        {
+            "type": "Identifier",
+            "name": "Student_ID",
+            "x": 741.0112915039062,
+            "y": 536.5634155273438,
+            "width": 474.81207275390625,
+            "height": 363.11572265625,
+            "rows": "10",
+            "cols": "10",
+            "order": "Column Wise",
+            "values": [
+                "0",
+                "1",
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8",
+                "9"
+            ],
+            "subtype": "Student Identifier"
+        },
+        {
+            "type": "Annotation",
+            "name": "annote1",
+            "x": 825.7220458984375,
+            "y": 1400.775634765625,
+            "width": 656.24560546875,
+            "height": 497.84552001953125,
+            "rows": "1",
+            "cols": "1",
+            "order": "Row Wise",
+            "values": [
+                "a",
+                "b",
+                "c",
+                "d"
+            ],
+            "subtype": "Answer Script Identifier"
+        },
+        {
+            "type": "Annotation",
+            "name": "annote2",
+            "x": 1238.009033203125,
+            "y": 463.1720886230469,
+            "width": 277.3682861328125,
+            "height": 445.18212890625,
+            "rows": "1",
+            "cols": "1",
+            "order": "Row Wise",
+            "values": [
+                "a",
+                "b",
+                "c",
+                "d"
+            ],
+            "subtype": "Answer Script Identifier"
+        }
+    ]
+}
