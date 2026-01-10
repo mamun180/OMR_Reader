@@ -732,6 +732,11 @@ class CheckerWindow(QWidget):
             self.new_excel_filename_edit.setReadOnly(True)
             self.new_excel_filename_edit.setHidden(True)
 
+    def save_settings(self):
+        """Placeholder for saving any checker-specific settings on close."""
+        # Most settings are saved on interaction, but this hook is here if needed.
+        pass
+
     def _init_top_panel(self):
         source_selection_frame = QFrame(); source_selection_frame.setFrameShape(QFrame.Shape.StyledPanel)
         source_selection_layout = QVBoxLayout(source_selection_frame)
