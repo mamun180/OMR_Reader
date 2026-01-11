@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QScrollArea, QStatusBar, QStyle, QMessageBox, QPushButton, QSplashScreen, QFrame)
 from PyQt6.QtCore import QSettings, Qt, QSize, QTimer
 from PyQt6.QtGui import QFont, QPixmap, QPainter, QPainterPath
+from theme import apply_stylesheet_and_floatation
 from license_manager import verify_license, load_license_key, decrypt_and_load_module
 from resource_path import resource_path
 
