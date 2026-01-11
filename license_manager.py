@@ -168,7 +168,7 @@ def _get_encryption_key():
     Derives a static cryptographic key from a fixed password.
     This key is used for decrypting the core application modules.
     """
-    password = b'_Your_Secret_Password_Here_Change_Me_!' # IMPORTANT: Change this to your own secret phrase
+    hardcoded_secret = b'3456789iuytrewrgjhgr5426vbnmgfc854gbkjr' # IMPORTANT: Change this to your own secret phrase
     salt = b'_omr_checker_salt_' 
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),

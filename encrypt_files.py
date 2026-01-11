@@ -12,7 +12,7 @@ def _get_encryption_key():
     This key is used for encrypting the core application modules.
     MUST be identical to the function in license_manager.py
     """
-    password = b'_Your_Secret_Password_Here_Change_Me_!' # IMPORTANT: Use the same secret phrase as in license_manager.py
+    hardcoded_secret = b'3456789iuytrewrgjhgr5426vbnmgfc854gbkjr'
     salt = b'_omr_checker_salt_'
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
