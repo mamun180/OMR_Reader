@@ -31,7 +31,15 @@ class NamingOutputDialog(QDialog):
         except (FileNotFoundError, json.JSONDecodeError, TypeError): self.template_data = {}
         
         try:
-            self.student_data = pd.read_excel(student_data_path) if student_data_path and os.path.exists(student_data_path) else None
+            if student_data_path and os.path.exists(student_data_path):
+                if student_data_path.lower().endswith(('.xlsx', '.xls')):
+                    self.student_data = pd.read_excel(student_data_path)
+                elif student_data_path.lower().endswith('.csv'):
+                    self.student_data = pd.read_csv(student_data_path)
+                else:
+                    self.student_data = None
+            else:
+                self.student_data = None
         except Exception: self.student_data = None
 
         self.layout = QVBoxLayout(self)
@@ -271,7 +279,7 @@ class NamingOutputDialog(QDialog):
         self.settings.setValue("rename_components", [self.rename_components_list.item(i).text() for i in range(self.rename_components_list.count())])
         
         # Save Answer Key Naming tab
-        self.settings.setValue("answer_key_naming_pattern", [self.ans_key_name_list.item(i).text() for i in range(self.ans_key_name_list.count())])
+        self.settings.setValue("answer_key_naming_pattern", [self.answer_key_naming_pattern_list.item(i).text() for i in range(self.answer_key_naming_pattern_list.count())])
 
         self.settings.endGroup()
         self.defaults_settings.setValue("last_output_pattern", pattern_name)
@@ -306,7 +314,7 @@ class SettingsPage(QWidget):
         grid_layout = QGridLayout(paths_group_box)
         self.paths = {
             "base_directory": ("Base Data Directory:", None),
-            "student_data_sheet": ("Student Data Sheet:", "Excel Files (*.xlsx *.xls)"),
+            "student_data_sheet": ("Student Data Sheet:", "Excel Files (*.xlsx *.xls);;CSV Files (*.csv)"),
             "master_template": ("Master Template:", "JSON Files (*.json)"),
         }
         self.line_edits = {}
@@ -326,7 +334,14 @@ class SettingsPage(QWidget):
 
         naming_group_box = QGroupBox("File Naming & Output Patterns")
         naming_layout = QVBoxLayout(naming_group_box)
-        btn_setup_patterns = QPushButton("Setup Naming & Output Patterns...")
+        
+        active_pattern_layout = QHBoxLayout()
+        active_pattern_layout.addWidget(QLabel("Active Pattern:"))
+        self.active_pattern_combo = QComboBox()
+        active_pattern_layout.addWidget(self.active_pattern_combo)
+        naming_layout.addLayout(active_pattern_layout)
+
+        btn_setup_patterns = QPushButton("Setup/Edit Naming & Output Patterns...")
         btn_setup_patterns.clicked.connect(self.open_naming_output_dialog)
         naming_layout.addWidget(btn_setup_patterns)
         self.pattern_summary_label = QLabel("Active Pattern: <None>")
@@ -384,6 +399,7 @@ class SettingsPage(QWidget):
         layout.addLayout(button_layout)
         layout.addStretch()
         self.load_settings()
+        self.active_pattern_combo.currentTextChanged.connect(self.set_active_pattern)
 
     def _update_pattern_summary(self):
         pattern_name = self.settings.value("last_output_pattern")
@@ -405,6 +421,26 @@ class SettingsPage(QWidget):
         self.output_settings.endGroup()
         self.pattern_summary_label.setText("<br>".join(summary))
 
+    def set_active_pattern(self, pattern_name):
+        if not pattern_name:
+            return
+        self.settings.setValue("last_output_pattern", pattern_name)
+        self._update_pattern_summary()
+
+    def populate_active_pattern_combo(self):
+        self.active_pattern_combo.blockSignals(True)
+        
+        self.active_pattern_combo.clear()
+        pattern_names = self.output_settings.childGroups()
+        if pattern_names:
+            self.active_pattern_combo.addItems(sorted(pattern_names))
+        
+        current_pattern = self.settings.value("last_output_pattern", "")
+        if current_pattern in pattern_names:
+            self.active_pattern_combo.setCurrentText(current_pattern)
+        
+        self.active_pattern_combo.blockSignals(False)
+
     def open_naming_output_dialog(self):
         master_template_path = self.line_edits["master_template"].text()
         student_data_path = self.line_edits["student_data_sheet"].text()
@@ -419,11 +455,8 @@ class SettingsPage(QWidget):
         dialog = NamingOutputDialog(master_template_path, student_data_path, panel_text_color, self)
         apply_stylesheet_and_floatation(dialog)
 
-        # Apply panel text color to all QLabels in the dialog
-        for label in dialog.findChildren(QLabel):
-            label.setStyleSheet(f"color: {panel_text_color};")
-
         dialog.exec()
+        self.populate_active_pattern_combo()
         self._update_pattern_summary()
 
     def browse_file(self, key, caption, file_filter):
@@ -483,6 +516,7 @@ class SettingsPage(QWidget):
         self.button_height_slider.setValue(button_height)
         self.button_height_label.setText(f"{button_height}px")
         self.dark_mode_checkbox.setChecked(self.settings.value("dark_mode_enabled", "false", type=str).lower() == 'true')
+        self.populate_active_pattern_combo()
         self._update_pattern_summary()
 
     def revert_settings(self):
