@@ -12,7 +12,13 @@ def get_theme_stylesheet():
 
     header_text_color = settings.value("header_text_color", "#000000")
     panel_text_color = settings.value("panel_text_color", "#FFFFFF")
-    button_color_name = settings.value("button_color", "#FFFFFF")
+    button_color_name = settings.value("button_color")
+    if not button_color_name:
+        button_color_name = "#FFFFFF"
+    
+    button_color = QColor(button_color_name)
+    if not button_color.isValid():
+        button_color = QColor("#FFFFFF")
     font_family = settings.value("font_family", "Segoe UI")
     font_size = settings.value("font_size", 12, type=int)
     button_height = settings.value("button_height", 30, type=int)
@@ -21,7 +27,6 @@ def get_theme_stylesheet():
         return ""
 
     base_color = QColor(color_name)
-    button_color = QColor(button_color_name)
     
     main_bg_color = base_color.name()
     
@@ -53,10 +58,13 @@ def get_theme_stylesheet():
             subcontrol-origin: margin;
             subcontrol-position: top left;
             padding: 0 3px;
-            color: black;
+            color: {header_text_color};
             font-weight: bold;
         }}
-        QGroupBox QLabel, QGroupBox QRadioButton, QGroupBox QCheckBox {{
+        QGroupBox#solid_panel_groupbox {{
+            background-color: {main_bg_color};
+        }}
+        QGroupBox QLabel, QFrame QLabel, QGroupBox QRadioButton, QFrame QRadioButton, QGroupBox QCheckBox, QFrame QCheckBox {{
             color: {panel_text_color};
             background-color: transparent;
         }}
@@ -80,7 +88,8 @@ def get_theme_stylesheet():
             image: url('data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2024%2024%22%20fill=%22none%22%20stroke=%22white%22%20stroke-width=%223%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpolyline%20points=%2220%206%209%2017%204%2012%22%3E%3C/polyline%3E%3C/svg%3E');
         }}
 
-        QTextEdit#log_panel, QWidget#left_panel_widget, QWidget#right_panel_widget {{
+        QTextEdit#log_panel, QWidget#left_panel_widget, QWidget#right_panel_widget,
+        QWidget#scanner_left_panel, QWidget#scanner_right_panel {{
             background-color: {panel_bg_color};
             color: {panel_text_color};
             border-radius: 5px;
@@ -151,12 +160,19 @@ def get_theme_stylesheet():
         }}
 
         QTabWidget::pane {{
+            background-color: {main_bg_color}; /* Set pane background to main theme color */
             border-top: 2px solid {base_color.darker(180).name()};
         }}
+        
+        /* Ensure the QWidget content within the pane also gets the theme color */
+        QTabWidget QWidget {{
+            background-color: {main_bg_color};
+            color: {panel_text_color}; /* Ensure text is readable */
+        }}
         QTabBar::tab {{
-            background: white;
-            color: black;
-            border: 1px solid #ccc;
+            background: {base_color.lighter(130).name()}; /* Themed background for unselected tabs */
+            color: {panel_text_color}; /* Consistent text color */
+            border: 1px solid {base_color.darker(150).name()}; /* Themed border */
             border-bottom: none; 
             border-top-left-radius: 4px;
             border-top-right-radius: 4px;
@@ -166,10 +182,10 @@ def get_theme_stylesheet():
         QTabBar::tab:selected {{
             background: {base_color.name()};
             color: {header_text_color};
-            border-bottom-color: {button_color.name()};
+            border-bottom-color: {base_color.name()}; /* Match selected tab background */
         }}
         QTabBar::tab:!selected:hover {{
-            background: #f0f0f0;
+            background: {base_color.lighter(110).name()}; /* Lighter on hover */
         }}
         
         QLabel {{
@@ -200,6 +216,14 @@ def get_theme_stylesheet():
             background-color: white;
             color: black;
             selection-background-color: {base_color.lighter(120).name()};
+        }}
+        
+        QGroupBox#solid_panel_groupbox QLineEdit,
+        QGroupBox#solid_panel_groupbox QTextEdit,
+        QGroupBox#solid_panel_groupbox QComboBox {{
+            background-color: transparent;
+            color: {panel_text_color};
+            border: 1px solid {QColor(panel_text_color).lighter(150).name() if QColor(panel_text_color).lightnessF() < 0.5 else QColor(panel_text_color).darker(150).name()};
         }}
         
         QScrollArea {{
