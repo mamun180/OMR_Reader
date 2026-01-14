@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
                              QGraphicsView, QGraphicsScene, QFileDialog, QMessageBox, QGraphicsPixmapItem, QInputDialog,
                              QSplitter, QScrollArea, QCheckBox, QButtonGroup, QLineEdit, QGroupBox, QSlider, QToolButton, QGraphicsItem,
-                             QGridLayout, QRadioButton, QComboBox, QApplication, QTextEdit)
+                             QGridLayout, QRadioButton, QComboBox, QApplication, QTextEdit, QDialog, QTabWidget, QFormLayout, QDialogButtonBox)
 from PyQt6.QtGui import QImage, QPixmap, QColor, QBrush, QPen, QPolygonF
 from PyQt6.QtCore import Qt, QRectF, QPointF, QEvent, QSettings, QDateTime
 import sys
@@ -14,6 +14,182 @@ from core_omr import OMREngine
 from theme import apply_stylesheet_and_floatation
 from directory_manager import get_template_dir, get_answer_key_dir
 
+
+class ManualKeyCreatorDialog(QDialog):
+    def __init__(self, template_data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manual Answer Key Creator")
+        self.setMinimumWidth(600)
+        self.template_data = template_data
+        self.identifier_edits = {}
+        self.question_edits = {}
+        self.all_widgets = []
+
+        # Main Layout
+        self.main_layout = QVBoxLayout(self)
+
+        # --- Identifiers ---
+        id_group = QGroupBox("Answer Key Identifiers")
+        id_group.setObjectName("solid_panel_groupbox")
+        id_form_layout = QFormLayout(id_group)
+        
+        identifier_rois = [roi for roi in self.template_data.get('rois', []) if roi.get('type') == 'Identifier' and roi.get('subtype') == 'Answer Script Identifier']
+        
+        for roi in identifier_rois:
+            name = roi.get('name')
+            widget = None
+            is_single_dimension = (int(roi.get('rows', 0)) == 1 or int(roi.get('cols', 0)) == 1)
+            has_values = roi.get('values') and isinstance(roi.get('values'), list)
+
+            if is_single_dimension and has_values:
+                widget = QComboBox()
+                widget.addItems([""] + roi['values'])
+            else:
+                widget = QLineEdit()
+            
+            self.identifier_edits[name] = widget
+            self.all_widgets.append(widget)
+            id_form_layout.addRow(QLabel(f"{name}:"), widget)
+            
+        self.main_layout.addWidget(id_group)
+
+        # --- Answers ---
+        ans_group = QGroupBox("Answer Key")
+        ans_group.setObjectName("solid_panel_groupbox")
+        ans_layout = QVBoxLayout(ans_group)
+        
+        self.ans_tabs = QTabWidget()
+
+        # Comma Separated Tab
+        comma_tab = QWidget()
+        comma_layout = QVBoxLayout(comma_tab)
+        comma_layout.addWidget(QLabel("Enter answers separated by commas (e.g., A,B,C,D,A)"))
+        self.comma_answers_edit = QTextEdit()
+        self.comma_answers_edit.setPlaceholderText("A,B,C,D,A...")
+        comma_layout.addWidget(self.comma_answers_edit)
+        self.all_widgets.append(self.comma_answers_edit)
+        
+        # By Question Tab
+        by_question_tab = QWidget()
+        by_question_layout = QVBoxLayout(by_question_tab)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_content = QWidget()
+        form_layout = QFormLayout(scroll_content)
+        
+        total_questions = 0
+        answer_rois = [r for r in self.template_data.get('rois', []) if r.get('type') == 'Answer']
+        for r in answer_rois:
+            try:
+                total_questions += int(r.get('rows', 0))
+            except (ValueError, TypeError):
+                continue
+        
+        question_widgets_in_order = []
+        for i in range(1, total_questions + 1):
+            widget = QLineEdit()
+            widget.setFixedWidth(100)
+            widget.setPlaceholderText("e.g., A,B")
+            self.question_edits[str(i)] = widget
+            question_widgets_in_order.append(widget)
+            form_layout.addRow(QLabel(f"Question {i}:"), widget)
+
+        scroll_area.setWidget(scroll_content)
+        by_question_layout.addWidget(scroll_area)
+
+        self.ans_tabs.addTab(comma_tab, "Comma Separated")
+        self.ans_tabs.addTab(by_question_tab, "By Question")
+        ans_layout.addWidget(self.ans_tabs)
+        self.main_layout.addWidget(ans_group)
+
+        # --- Buttons ---
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        self.button_box.accepted.connect(self.save_key)
+        self.button_box.rejected.connect(self.reject)
+        self.main_layout.addWidget(self.button_box)
+
+        # Combine question widgets to all_widgets list depending on tab visibility
+        # For now, we'll just add the "By Question" ones for simplicity
+        self.all_widgets.extend(question_widgets_in_order)
+        
+        # Install event filter on all input widgets
+        for widget in self.all_widgets:
+            widget.installEventFilter(self)
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.Type.KeyPress and event.key() in [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Down, Qt.Key.Key_Up]:
+            if source in self.all_widgets:
+                try:
+                    current_index = self.all_widgets.index(source)
+                    if event.key() in [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Down]:
+                        if current_index < len(self.all_widgets) - 1:
+                            next_widget = self.all_widgets[current_index + 1]
+                            next_widget.setFocus()
+                            if isinstance(next_widget, QComboBox):
+                                next_widget.showPopup()
+                            return True
+                    elif event.key() == Qt.Key.Key_Up:
+                        if current_index > 0:
+                            prev_widget = self.all_widgets[current_index - 1]
+                            prev_widget.setFocus()
+                            if isinstance(prev_widget, QComboBox):
+                                prev_widget.showPopup()
+                            return True
+                except (ValueError, IndexError):
+                    pass
+        return super().eventFilter(source, event)
+
+    def save_key(self):
+        # 1. Gather Identifiers
+        identifiers = {}
+        for name, widget in self.identifier_edits.items():
+            if isinstance(widget, QComboBox):
+                identifiers[name] = widget.currentText()
+            else: # QLineEdit
+                identifiers[name] = widget.text()
+
+        # 2. Gather Answers
+        answers = {}
+        current_tab_text = self.ans_tabs.tabText(self.ans_tabs.currentIndex())
+        if current_tab_text == "Comma Separated":
+            ans_string = self.comma_answers_edit.toPlainText().strip()
+            if ans_string:
+                ans_list = [ans.strip().upper() for ans in ans_string.split(',')]
+                for i, ans in enumerate(ans_list, 1):
+                    answers[str(i)] = [ans]
+        else: # By Question
+            for q_num, edit in self.question_edits.items():
+                ans = edit.text().strip().upper()
+                if ans:
+                    answers[q_num] = [a.strip() for a in ans.split(',')]
+
+        if not any(identifiers.values()) or not answers:
+            QMessageBox.warning(self, "Missing Data", "Please fill in at least one identifier and some answers.")
+            return
+
+        # 3. Construct data object
+        data_to_save = {
+            'template': self.template_data,
+            'image_settings': {},
+            'identifiers': identifiers,
+            'answers': answers
+        }
+
+        # 4. Generate filename and show save dialog
+        filename = self.parent()._generate_answer_key_filename(identifiers)
+        answer_key_dir = get_answer_key_dir()
+        save_path = os.path.join(answer_key_dir, f"{filename}.json")
+
+        path, _ = QFileDialog.getSaveFileName(self, "Save Manual Answer Key", save_path, "JSON Files (*.json)")
+
+        if path:
+            try:
+                with open(path, 'w') as f:
+                    json.dump(data_to_save, f, indent=4)
+                QMessageBox.information(self, "Success", f"Answer key saved to:\n{path}")
+                self.accept()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save answer key.\nError: {e}")
 
 
 class CornerHandle(QGraphicsPixmapItem):
@@ -85,7 +261,7 @@ class QuestionAnswerWidget(QWidget):
 
 class AnswerKeyScannerWindow(QWidget):
     DEFAULT_IMAGE_SETTINGS = {
-        'contrast': 1.3, 'brightness': 0, 'blur': 7, 'rotation': 0.0,
+        'contrast': 1.3, 'brightness': 0, 'blur': 3, 'rotation': 0.0,
         'adaptive_c': 3, 'threshold': 0.05, 'method': 'contour',
         'grayscale': False, 'transparency': 143,
         'allow_multiple_answers': True
@@ -102,6 +278,11 @@ class AnswerKeyScannerWindow(QWidget):
         self.btn_load_image.setMinimumHeight(50)
         self.btn_load_image.clicked.connect(self.load_image)
         toolbar_layout.addWidget(self.btn_load_image)
+
+        self.btn_create_manual_key = QPushButton("Create Answer Key")
+        self.btn_create_manual_key.setMinimumHeight(50)
+        self.btn_create_manual_key.clicked.connect(self.open_manual_key_creator)
+        toolbar_layout.addWidget(self.btn_create_manual_key)
 
         self.btn_save = QPushButton("Save Answer Key")
         self.btn_save.setMinimumHeight(50)
@@ -144,6 +325,7 @@ class AnswerKeyScannerWindow(QWidget):
 
         # --- 1. Left Panel (Settings + Log) ---
         left_panel_widget = QWidget()
+        left_panel_widget.setObjectName("scanner_left_panel")
         left_panel_layout = QVBoxLayout(left_panel_widget)
         left_panel_layout.setContentsMargins(0,0,0,0)
 
@@ -202,13 +384,23 @@ class AnswerKeyScannerWindow(QWidget):
         self.main_splitter.addWidget(canvas_container)
 
         # --- 3. Right Panel (Answers) ---
+        right_panel_wrapper = QWidget()
+        right_panel_wrapper.setObjectName("scanner_right_panel")
+        right_panel_layout = QVBoxLayout(right_panel_wrapper)
+        right_panel_layout.setContentsMargins(0,0,0,0)
+
         self.answers_scroll_area = QScrollArea()
         self.answers_scroll_area.setWidgetResizable(True)
+        # The QScrollArea itself doesn't need an objectName if its parent wrapper handles styling
+
         self.answers_widget = QWidget()
         self.answers_layout = QVBoxLayout(self.answers_widget)
         self.answers_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.answers_layout.setContentsMargins(0,0,0,0) # Ensure content fills transparent area
+        self.answers_layout.setSpacing(0) # Reduce spacing for better look
         self.answers_scroll_area.setWidget(self.answers_widget)
-        self.main_splitter.addWidget(self.answers_scroll_area)
+        right_panel_layout.addWidget(self.answers_scroll_area)
+        self.main_splitter.addWidget(right_panel_wrapper)
 
         main_layout.addWidget(self.main_splitter, 1)
         # Set splitter sizes after the window has been shown and sized
@@ -245,6 +437,17 @@ class AnswerKeyScannerWindow(QWidget):
 
     def apply_theme(self):
         apply_stylesheet_and_floatation(self)
+
+    def open_manual_key_creator(self):
+        if not self.template_data:
+            self._load_master_template()
+            if not self.template_data:
+                QMessageBox.warning(self, "Template Missing", "A master template must be set in the main settings page before you can create a manual key.")
+                return
+        
+        dialog = ManualKeyCreatorDialog(self.template_data, self)
+        apply_stylesheet_and_floatation(dialog)
+        dialog.exec()
 
     def log(self, message):
         timestamp = QDateTime.currentDateTime().toString("hh:mm:ss")
@@ -315,9 +518,20 @@ class AnswerKeyScannerWindow(QWidget):
     def _load_master_template(self):
         settings = QSettings("OptiMark Pro", "Defaults")
         master_template_path = settings.value("master_template", "")
-        if self.current_image is not None and master_template_path and os.path.exists(master_template_path):
+        if master_template_path and os.path.exists(master_template_path):
             self.log(f"Master template found. Loading: {os.path.basename(master_template_path)}")
-            self.load_template(master_template_path)
+            try:
+                with open(master_template_path, 'r') as f:
+                    self.template_data = json.load(f)
+                # If an image is also loaded, we can run detection on it
+                if self.current_image is not None:
+                     self._create_right_panel_widgets()
+                     self.run_auto_corner_detection()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load or parse master template: {e}")
+                self.template_data = None
+        else:
+            self.log("Master template not set or not found.")
 
     def load_template(self, path=None):
         if self.current_image is None: QMessageBox.warning(self, "No Image", "Please load an image first."); return
@@ -765,57 +979,12 @@ class AnswerKeyScannerWindow(QWidget):
             elif isinstance(widget, IdentifierEditWidget):
                 ids[name] = widget.value_edit.text()
 
-        now = datetime.datetime.now()
-        filename_parts = []
-        
-        settings = QSettings("OptiMark Pro", "Defaults")
-        naming_pattern = settings.value("answer_key_naming_pattern", [], type=list)
-
-        if naming_pattern:
-            # Use the dynamic pattern from settings
-            for component in naming_pattern:
-                part = ""
-                if component == "YYYY": part = now.strftime('%Y')
-                elif component == "MM": part = now.strftime('%m')
-                elif component == "DD": part = now.strftime('%d')
-                elif component == "hh": part = now.strftime('%H')
-                elif component == "mm": part = now.strftime('%M')
-                elif component == "ss": part = now.strftime('%S')
-                elif component.startswith('"') and component.endswith('"'):
-                    part = component.strip('"')
-                else: # It's an ROI name
-                    value = ids.get(component, '').strip()
-                    part = value.upper().replace("-", "_") if value else 'None'
-                filename_parts.append(part)
-        else:
-            # Fallback to original hardcoded logic
-            key_mapping = {
-                'exam': 'Exam', 'class': 'Class',
-                'subject': 'Subject_Code', 'set': 'Set_Code'
-            }
-            filename_keys_in_order = ['exam', 'class', 'subject', 'set']
-            for key in filename_keys_in_order:
-                template_key = key_mapping.get(key)
-                value = ids.get(template_key, '').strip()
-                filename_parts.append(value.upper().replace("-", "_") if value else 'None')
-            
-            time_str = now.strftime('%H%M')
-            date_str = now.strftime('%d%m%Y')
-            filename_parts.extend([time_str, date_str])
-
-        filename = "_".join(filter(None, filename_parts))
-        
-        # Use the same, final UI values for the 'identifiers' data field
-        final_identifiers = {}
-        template_id_names = [r['name'] for r in self.template_data.get('rois', []) if r.get('type') == 'Identifier']
-        for name in template_id_names:
-            value = ids.get(name, '').strip()
-            final_identifiers[name] = value if value else "None"
+        filename = self._generate_answer_key_filename(ids)
 
         data_to_save = {
             'template': self.template_data,
             'image_settings': self.get_current_params(),
-            'identifiers': final_identifiers,
+            'identifiers': ids,
             'answers': self.scan_results.get('answers', {}) if self.scan_results else {}
         }
 
@@ -830,6 +999,53 @@ class AnswerKeyScannerWindow(QWidget):
                 QMessageBox.information(self, "Success", f"Answer key data saved to:\n{path}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save answer key.\nError: {e}")
+
+    def _generate_answer_key_filename(self, ids):
+        now = datetime.datetime.now()
+        filename_parts = []
+        
+        output_settings = QSettings("OptiMark Pro", "OutputPatterns")
+        defaults_settings = QSettings("OptiMark Pro", "Defaults")
+        active_pattern_name = defaults_settings.value("last_output_pattern", "")
+        naming_pattern = []
+
+        if active_pattern_name:
+            output_settings.beginGroup(active_pattern_name)
+            naming_pattern = output_settings.value("answer_key_naming_pattern", [], type=list)
+            output_settings.endGroup()
+
+        if naming_pattern:
+            self.log(f"Using '{active_pattern_name}' pattern to generate filename.")
+            for component in naming_pattern:
+                part = ""
+                if component == "YYYY": part = now.strftime('%Y')
+                elif component == "MM": part = now.strftime('%m')
+                elif component == "DD": part = now.strftime('%d')
+                elif component == "hh": part = now.strftime('%H')
+                elif component == "mm": part = now.strftime('%M')
+                elif component == "ss": part = now.strftime('%S')
+                elif component == 'year': part = now.strftime('%Y')
+                elif component == 'date': part = now.strftime('%d_%b_%y')
+                elif component.startswith('"') and component.endswith('"'):
+                    part = component.strip('"')
+                else: # It's an ROI name
+                    value = ids.get(component, '').strip()
+                    part = value.replace(" ", "_") if value else 'None'
+                filename_parts.append(part)
+        else:
+            self.log("No answer key naming pattern found. Using fallback naming scheme.")
+            key_mapping = {'exam': 'Exam', 'class': 'Class', 'subject': 'Subject_Code', 'set': 'Set_Code'}
+            filename_keys_in_order = ['exam', 'class', 'subject', 'set']
+            for key in filename_keys_in_order:
+                template_key = key_mapping.get(key)
+                value = ids.get(template_key, '').strip()
+                filename_parts.append(value.upper().replace("-", "_") if value else 'None')
+            
+            time_str = now.strftime('%H%M')
+            date_str = now.strftime('%d%m%Y')
+            filename_parts.extend([time_str, date_str])
+
+        return "_".join(filter(None, filename_parts))
 
     def save_image_settings(self):
         """Saves the current image settings to QSettings."""
