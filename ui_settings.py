@@ -326,7 +326,7 @@ class SettingsPage(QWidget):
             if file_filter is None:
                 browse_button.clicked.connect(lambda ch=False, k=key, cap=label_text: self.browse_folder(k, f"Select {cap}"))
             else:
-                browse_button.clicked.connect(lambda ch=False, k=key, cap=label_text: self.browse_file(k, f"Select {cap}", file_filter))
+                browse_button.clicked.connect(lambda ch=False, k=key, cap=label_text, f=file_filter: self.browse_file(k, f"Select {cap}", f))
             grid_layout.addWidget(label, i, 0)
             grid_layout.addWidget(self.line_edits[key], i, 1)
             grid_layout.addWidget(browse_button, i, 2)
