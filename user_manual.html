@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OptiMark Pro - User Manual</title>
+    <style>
+        :root {
+            --primary-color: #4a90e2;
+            --secondary-color: #50e3c2;
+            --background-color: #f8f9fa;
+            --text-color: #333;
+            --sidebar-bg: linear-gradient(135deg, #4a90e2 0%, #50e3c2 100%);
+            --sidebar-text: #ffffff;
+            --sidebar-hover: rgba(255, 255, 255, 0.2);
+            --heading-color: #2c3e50;
+        }
+        body {
+            font-family: 'Segoe UI',-apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.7;
+            margin: 0;
+            padding: 0;
+            background-color: var(--background-color);
+            color: var(--text-color);
+        }
+        .container {
+            display: flex;
+        }
+        #sidebar {
+            width: 250px;
+            background: var(--sidebar-bg);
+            color: var(--sidebar-text);
+            padding: 20px;
+            height: 100vh;
+            position: fixed;
+            overflow-y: auto;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+        }
+        #sidebar h2 {
+            color: var(--sidebar-text);
+            text-align: center;
+            font-weight: 600;
+            margin-bottom: 25px;
+        }
+        #sidebar ul {
+            list-style: none;
+            padding: 0;
+        }
+        #sidebar ul li a {
+            color: var(--sidebar-text);
+            text-decoration: none;
+            padding: 12px 18px;
+            display: block;
+            border-radius: 5px;
+            margin-bottom: 5px;
+            transition: background 0.3s ease;
+        }
+        #sidebar ul li a:hover, #sidebar ul li a.active {
+            background: var(--sidebar-hover);
+        }
+        #main-content {
+            padding: 30px;
+            width: 100%;
+        }
+        .section {
+            margin-bottom: 40px;
+            padding-top: 20px; /* For anchor link offset */
+        }
+        h1, h2, h3 {
+            color: var(--heading-color);
+            font-weight: 600;
+        }
+        h1 {
+            font-size: 2.5em;
+            border-bottom: 3px solid var(--primary-color);
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-size: 1.8em;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-top: 40px;
+        }
+        h3 {
+            font-size: 1.4em;
+            color: #555;
+        }
+        code {
+            background: #e9ecef;
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-family: "Courier New", Courier, monospace;
+            color: #c7254e;
+        }
+        .note {
+            background: #fff3cd;
+            border-left: 6px solid #ffeeba;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 0 5px 5px 0;
+        }
+        .note p {
+            margin: 0;
+        }
+        ol li, ul li {
+            margin-bottom: 10px;
+        }
+        strong {
+            color: var(--primary-color);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <main id="main-content">
+            <div id="introduction" class="section">
+                <h1>User Manual</h1>
+                <h2>Introduction</h2>
+                <p>
+                    Welcome to OptiMark Pro, a comprehensive OMR (Optical Mark Recognition) solution designed to streamline the process of creating, scanning, and checking OMR answer sheets. This manual provides a detailed guide to all the features of the software.
+                </p>
+            </div>
+
+            <div id="installation" class="section">
+                <h2>Installation</h2>
+                <p>
+                    OptiMark Pro is distributed as a single executable file. To install the software, simply follow these steps:
+                </p>
+                <ol>
+                    <li>Download the installer file (e.g., <code>OptiMark_Pro_Installer.exe</code>).</li>
+                    <li>Double-click the installer to run it.</li>
+                    <li>Follow the on-screen instructions to complete the installation.</li>
+                </ol>
+                <p>Once installed, you can launch OptiMark Pro from the Start Menu or by double-clicking the desktop shortcut.</p>
+            </div>
+
+            <div id="registration" class="section">
+                <h2>Registration</h2>
+                <p>
+                    Upon first launch, the application will be in an unregistered state with limited functionality. To unlock all features, you must register the application with a valid license key.
+                </p>
+                <ol>
+                    <li>Launch OptiMark Pro. You will be greeted with the Home screen.</li>
+                    <li>Click the <strong>"Register Application"</strong> button. This will take you to the <strong>Registration</strong> tab.</li>
+                    <li>Enter your license key in the provided field.</li>
+                    <li>Click the <strong>"Register"</strong> button.</li>
+                    <li>If the license key is valid, the application will unlock all features, and you will see a success message.</li>
+                </ol>
+                <div class="note">
+                    <p><strong>Note:</strong> An internet connection is required for license validation. The license is tied to a single machine.</p>
+                </div>
+            </div>
+
+            <div id="template-builder" class="section">
+                <h2>Template Builder</h2>
+                <p>
+                    The Template Builder is a powerful tool for creating OMR sheet templates. A template defines the layout of your OMR sheet, including the location of corner markers, content areas, and all the bubbles for answers and identifiers.
+                </p>
+                <h3>Workflow</h3>
+                <ol>
+                    <li><strong>Load Image:</strong> Click the <strong>"Load Image"</strong> button to load a scanned image of your OMR sheet. This image will be used as a guide for creating the template.</li>
+                    <li><strong>Learn Corner Shape:</strong> Click the <strong>"1. Learn Corner Shape"</strong> button. The application will prompt you to draw a box around one of the corner markers on your sheet. This helps the software identify the corners automatically.</li>
+                    <li><strong>Define Content Box:</strong> Once the corners are detected, click the <strong>"2. Define Content Box"</strong> button. You will be prompted to click on the four corners of the main content area of your OMR sheet. The application will then "warp" or straighten this area to correct for any scanning distortions.</li>
+                    <li><strong>Draw ROIs (Regions of Interest):</strong> Use the "Draw" tool to draw rectangles over the different sections of your warped OMR sheet. These sections can be for student IDs, exam codes, or the main answer bubbles.</li>
+                    <li><strong>Define ROI Properties:</strong>
+                        <ul>
+                            <li>Select an ROI by clicking on it.</li>
+                            <li>In the "ROI Properties" panel on the left, you can define the properties of the selected ROI.</li>
+                            <li><strong>Name:</strong> Give the ROI a descriptive name (e.g., "Student ID", "Section A").</li>
+                            <li><strong>Type:</strong> Assign a type to the ROI:
+                                <ul>
+                                    <li><code>Identifier</code>: For areas like student ID, roll number, etc. You can specify the number of rows and columns of bubbles, the order of reading, and the corresponding values.</li>
+                                    <li><code>Answer</code>: For the main answer sections. Define the number of questions, options per question, and the values for each option (e.g., A, B, C, D).</li>
+                                    <li><code>Qrcode</code>: For any QR codes on the sheet.</li>
+                                    <li><code>Annotation</code>: For other annotations or notes.</li>
+                                </ul>
+                            </li>
+                        </ul>
+                    </li>
+                    <li><strong>Save Template:</strong> Once you have defined all the ROIs, click the <strong>"Save Template"</strong> button to save your template as a JSON file.</li>
+                </ol>
+            </div>
+
+            <div id="answer-key-scanner" class="section">
+                <h2>Answer Key Scanner</h2>
+                <p>
+                    The Answer Key Scanner is used to scan a completed OMR sheet and save it as an answer key file. This file will be used later to check student answer sheets.
+                </p>
+                <h3>Workflow</h3>
+                <ol>
+                    <li>Navigate to the <strong>"Answer Key Scanner"</strong> tab.</li>
+                    <li><strong>Load Image:</strong> Click the <strong>"Load Image"</strong> button to load a scanned image of the completed answer key sheet.</li>
+                    <li><strong>Automatic Scanning:</strong> The application will automatically use the "Master Template" (set in the Settings) to detect the corners and scan the sheet.</li>
+                    <li><strong>Manual Correction (if needed):</strong> If the automatic scan fails, you can manually click on the four corners of the sheet to align it correctly.</li>
+                    <li><strong>Adjust Parameters:</strong> Use the sliders and controls in the left panel to adjust image processing parameters (contrast, brightness, etc.) to improve the accuracy of the scan. Click <strong>"Re-Scan"</strong> to see the changes.</li>
+                    <li><strong>Verify Answers:</strong> The scanned answers will be displayed in the panel on the right. You can manually check or uncheck the bubbles to correct any errors.</li>
+                    <li><strong>Save Answer Key:</strong> Once you are satisfied with the scanned answers, click the <strong>"Save Answer Key"</strong> button. The answer key will be saved as a JSON file, which includes the template data, the image settings, and the final list of correct answers.</li>
+                </ol>
+            </div>
+
+            <div id="answer-checker" class="section">
+                <h2>Answer Checker</h2>
+                <p>
+                    The Answer Checker is the core of the application, where you can check multiple student answer sheets against one or more answer keys.
+                </p>
+                <h3>Workflow</h3>
+                <ol>
+                    <li>Navigate to the <strong>"Answer Checker"</strong> tab.</li>
+                    <li><strong>Add Images:</strong> Click the <strong>"Add Images"</strong> button to select the student answer sheet images you want to check. You can select multiple files or an entire folder.</li>
+                    <li><strong>Select Answer Key(s):</strong> Select the appropriate answer key file(s) from the dropdown list. If you select multiple answer keys, the application will automatically try to find the correct key for each sheet based on matching identifiers (like exam code or subject).</li>
+                    <li><strong>Start Scan:</strong> Click the <strong>"Start Scan"</strong> button. The application will begin processing the images one by one.
+                        <ul>
+                            <li><strong>Auto Mode:</strong> In this mode, the application will attempt to process all images automatically. If it encounters an error on a sheet, it may skip it.</li>
+                            <li><strong>Manual Mode:</strong> In this mode, the application will pause on each sheet, allowing you to verify the scanned data and make corrections before moving to the next one.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Review and Correct:</strong> For each sheet, the application displays the scanned image with the detected answers highlighted. You can correct any mistakes in the right-hand panel.</li>
+                    <li><strong>Save Results:</strong> The results are automatically saved to an Excel file. You can configure the output format and filename pattern in the Settings.</li>
+                </ol>
+            </div>
+
+            <div id="settings" class="section">
+                <h2>Settings</h2>
+                <p>
+                    The Settings tab allows you to configure various aspects of the application.
+                </p>
+                <h3>Default Paths</h3>
+                <ul>
+                    <li><strong>Base Data Directory:</strong> The main folder where all application data (templates, answer keys, results) will be stored.</li>
+                    <li><strong>Student Data Sheet:</strong> An optional Excel file containing student information. If provided, this data can be automatically included in the final results.</li>
+                    <li><strong>Master Template:</strong> The default template file to be used by the Answer Key Scanner and Answer Checker.</li>
+                </ul>
+                <h3>File Naming & Output Patterns</h3>
+                <p>
+                    Here you can create and manage patterns for how your output files are named. This provides a powerful way to organize your results. You can define patterns for:
+                </p>
+                <ul>
+                    <li><strong>Excel Filename:</strong> The name of the Excel file where the results are saved.</li>
+                    <li><strong>Image Renaming:</strong> How the scanned image files should be renamed after processing.</li>
+                    <li><strong>Answer Key Naming:</strong> The default naming scheme for new answer keys.</li>
+                </ul>
+                <p>
+                    You can use components like the current date, time, or the values from scanned identifier ROIs (e.g., <code>&lt;Exam_Code&gt;_&lt;Subject&gt;.xlsx</code>) to create dynamic filenames.
+                </p>
+                <h3>Theme</h3>
+                <p>
+                    Customize the look and feel of the application, including font, font size, and colors.
+                </p>
+            </div>
+
+        </main>
+    </div>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            const sections = document.querySelectorAll(".section");
+            const navLinks = document.querySelectorAll("#sidebar ul li a");
+
+            const observer = new IntersectionObserver(entries => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        navLinks.forEach(link => {
+                            link.classList.remove("active");
+                            if (link.getAttribute("href").substring(1) === entry.target.id) {
+                                link.classList.add("active");
+                            }
+                        });
+                    }
+                });
+            }, { threshold: 0.5 });
+
+            sections.forEach(section => {
+                observer.observe(section);
+            });
+        });
+    </script>
+</body>
+</html>

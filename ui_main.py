@@ -11,6 +11,7 @@ from ui_settings import SettingsPage
 from ui_about import AboutWindow
 from ui_registration import RegistrationPage
 from ui_navigation import NavigationScreen
+from ui_manual import ManualWindow
 from theme import apply_stylesheet_and_floatation
 from license_manager import verify_license
 from resource_path import resource_path
@@ -101,6 +102,10 @@ class OMRApp(QMainWindow):
         self.tab_widget.addTab(self.about_page, "About")
         self.tab_widget.addTab(self.registration_page, "Registration")
 
+        # Add the User Manual tab
+        self.manual_page = ManualWindow()
+        self.tab_widget.addTab(self.manual_page, "User Manual")
+
         # --- Add Icons to Tabs ---
         icon_map = {
             "Home": QStyle.StandardPixmap.SP_ComputerIcon,
@@ -109,17 +114,21 @@ class OMRApp(QMainWindow):
             "Answer Checker": QStyle.StandardPixmap.SP_DialogApplyButton,
             "Settings": QStyle.StandardPixmap.SP_FileDialogDetailedView,
             "About": QStyle.StandardPixmap.SP_MessageBoxInformation,
-            "Registration": QStyle.StandardPixmap.SP_DialogApplyButton
+            "Registration": QStyle.StandardPixmap.SP_DialogApplyButton,
+            "User Manual": QStyle.StandardPixmap.SP_DirHomeIcon
         }
         for i in range(self.tab_widget.count()):
             tab_name = self.tab_widget.tabText(i)
             icon = self.style().standardIcon(icon_map.get(tab_name, QStyle.StandardPixmap.SP_FileIcon))
             self.tab_widget.setTabIcon(i, icon)
 
-        # Now create and insert the navigation page
+        # Now create and insert the navigation page, then hide it
         self.navigation_page = NavigationScreen(self.tab_widget)
         self.tab_widget.insertTab(1, self.navigation_page, "Navigation")
         self.tab_widget.setTabIcon(1, self.style().standardIcon(QStyle.StandardPixmap.SP_DirLinkIcon))
+        self.tab_widget.tabBar().setTabVisible(1, False)
+
+
 
 
         # --- Connect Signals ---
@@ -173,8 +182,10 @@ class OMRApp(QMainWindow):
 
     def _on_tab_changed(self, index):
         current_tab_name = self.tab_widget.tabText(index)
-        is_home_or_nav = current_tab_name in ["Home", "Navigation"]
-        self.tab_widget.tabBar().setVisible(not is_home_or_nav)
+        if current_tab_name in ["Home", "Navigation"]:
+            self.tab_widget.tabBar().setVisible(False)
+        else:
+            self.tab_widget.tabBar().setVisible(True)
 
     def find_tab_by_name(self, name):
         for i in range(self.tab_widget.count()):

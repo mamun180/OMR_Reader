@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OptiMark Pro - User Manual</title>
+    <style>
+        :root {
+            --primary-color: #4a90e2;
+            --secondary-color: #50e3c2;
+            --background-color: #f8f9fa;
+            --text-color: #333;
+            --sidebar-bg: linear-gradient(135deg, #4a90e2 0%, #50e3c2 100%);
+            --sidebar-text: #ffffff;
+            --sidebar-hover: rgba(255, 255, 255, 0.2);
+            --heading-color: #2c3e50;
+        }
+        body {
+            font-family: 'Segoe UI',-apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.7;
+            margin: 0;
+            padding: 0;
+            background-color: var(--background-color);
+            color: var(--text-color);
+        }
+        .container {
+            display: flex;
+        }
+        #sidebar {
+            width: 250px;
+            background: var(--sidebar-bg);
+            color: var(--sidebar-text);
+            padding: 20px;
+            height: 100vh;
+            position: fixed;
+            overflow-y: auto;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+        }
+        #sidebar h2 {
+            color: var(--sidebar-text);
+            text-align: center;
+            font-weight: 600;
+            margin-bottom: 25px;
+        }
+        #sidebar ul {
+            list-style: none;
+            padding: 0;
+        }
+        #sidebar ul li a {
+            color: var(--sidebar-text);
+            text-decoration: none;
+            padding: 12px 18px;
+            display: block;
+            border-radius: 5px;
+            margin-bottom: 5px;
+            transition: background 0.3s ease;
+        }
+        #sidebar ul li a:hover, #sidebar ul li a.active {
+            background: var(--sidebar-hover);
+        }
+        #main-content {
+            padding: 30px;
+            width: 100%;
+        }
+        .section {
+            margin-bottom: 40px;
+            padding-top: 20px; /* For anchor link offset */
+        }
+        h1, h2, h3 {
+            color: var(--heading-color);
+            font-weight: 600;
+        }
+        h1 {
+            font-size: 2.5em;
+            border-bottom: 3px solid var(--primary-color);
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-size: 1.8em;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-top: 40px;
+        }
+        h3 {
+            font-size: 1.4em;
+            color: #555;
+        }
+        code {
+            background: #e9ecef;
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-family: "Courier New", Courier, monospace;
+            color: #c7254e;
+        }
+        .note {
+            background: #fff3cd;
+            border-left: 6px solid #ffeeba;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 0 5px 5px 0;
+        }
+        .note p {
+            margin: 0;
+        }
+        ol li, ul li {
+            margin-bottom: 10px;
+        }
+        strong {
+            color: var(--primary-color);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <main id="main-content">
+            <div id="introduction" class="section">
+                <h1>User Manual</h1>
+                <h2>Introduction</h2>
+                <p>
+                    OptiMark Pro-তে স্বাগতম, এটি একটি বিস্তৃত OMR (অপটিক্যাল মার্ক রিকগনিশন) সমাধান যা OMR উত্তরপত্র তৈরি, স্ক্যান এবং পরীক্ষা করার প্রক্রিয়াকে সহজ করার জন্য ডিজাইন করা হয়েছে। এই ম্যানুয়ালটি সফ্টওয়্যারের সমস্ত বৈশিষ্ট্যের জন্য একটি বিস্তারিত নির্দেশিকা প্রদান করে।
+                </p>
+            </div>
+
+            <div id="installation" class="section">
+                <h2>Installation</h2>
+                <p>
+                    OptiMark Pro একটি একক এক্সিকিউটেবল ফাইল হিসাবে বিতরণ করা হয়। সফ্টওয়্যারটি ইনস্টল করতে, কেবল এই পদক্ষেপগুলি অনুসরণ করুন:
+                </p>
+                <ol>
+                    <li>ইনস্টলার ফাইলটি ডাউনলোড করুন (যেমন, <code>OptiMark_Pro_Installer.exe</code>)।</li>
+                    <li>এটি চালানোর জন্য ইনস্টলারে ডাবল-ক্লিক করুন।</li>
+                    <li>ইনস্টলেশন সম্পূর্ণ করতে অন-স্ক্রিন নির্দেশাবলী অনুসরণ করুন।</li>
+                </ol>
+                <p>ইনস্টল হয়ে গেলে, আপনি স্টার্ট মেনু থেকে বা ডেস্কটপ শর্টকাটে ডাবল-ক্লিক করে OptiMark Pro চালু করতে পারেন।</p>
+            </div>
+
+            <div id="registration" class="section">
+                <h2>Registration</h2>
+                <p>
+                    প্রথমবার চালু হলে, অ্যাপ্লিকেশনটি সীমিত কার্যকারিতা সহ একটি নিবন্ধিত অবস্থায় থাকবে। সমস্ত বৈশিষ্ট্য আনলক করতে, আপনাকে অবশ্যই একটি বৈধ লাইসেন্স কী দিয়ে অ্যাপ্লিকেশনটি নিবন্ধন করতে হবে।
+                </p>
+                <ol>
+                    <li>OptiMark Pro চালু করুন। আপনাকে হোম স্ক্রীন দিয়ে স্বাগত জানানো হবে।</li>
+                    <li> <strong>"Register Application"</strong> বোতামে ক্লিক করুন। এটি আপনাকে <strong>Registration</strong> ট্যাবে নিয়ে যাবে।</li>
+                    <li>প্রদত্ত ক্ষেত্রে আপনার লাইসেন্স কী লিখুন।</li>
+                    <li> <strong>"Register"</strong> বোতামে ক্লিক করুন।</li>
+                    <li>যদি লাইসেন্স কী বৈধ হয়, অ্যাপ্লিকেশনটি সমস্ত বৈশিষ্ট্য আনলক করবে এবং আপনি একটি সাফল্য বার্তা দেখতে পাবেন।</li>
+                </ol>
+                <div class="note">
+                    <p><strong>দ্রষ্টব্য:</strong> লাইসেন্স যাচাইয়ের জন্য একটি ইন্টারনেট সংযোগ প্রয়োজন। লাইসেন্সটি একটি একক মেশিনের সাথে আবদ্ধ।</p>
+                </div>
+            </div>
+
+            <div id="template-builder" class="section">
+                <h2>Template Builder</h2>
+                <p>
+                    টেমপ্লেট বিল্ডার OMR শীট টেমপ্লেট তৈরির জন্য একটি শক্তিশালী টুল। একটি টেমপ্লেট আপনার OMR শীটের লেআউটকে সংজ্ঞায়িত করে, যার মধ্যে রয়েছে কোণার মার্কার, বিষয়বস্তু এলাকা এবং উত্তর ও শনাক্তকারীদের জন্য সমস্ত বুদবুদের অবস্থান।
+                </p>
+                <h3>Workflow</h3>
+                <ol>
+                    <li><strong>Load Image:</strong> আপনার OMR শীটের একটি স্ক্যান করা ছবি লোড করতে "Load Image" বোতামে ক্লিক করুন। এই ছবিটি টেমপ্লেট তৈরির জন্য একটি গাইড হিসাবে ব্যবহৃত হবে।</li>
+                    <li><strong>Learn Corner Shape:</strong> "1. Learn Corner Shape" বোতামে ক্লিক করুন। অ্যাপ্লিকেশনটি আপনাকে আপনার শীটের কোণার মার্কারগুলির একটির চারপাশে একটি বাক্স আঁকতে অনুরোধ করবে। এটি সফ্টওয়্যারকে স্বয়ংক্রিয়ভাবে কোণগুলি সনাক্ত করতে সহায়তা করে।</li>
+                    <li><strong>Define Content Box:</strong> কোণগুলি সনাক্ত হয়ে গেলে, "2. Define Content Box" বোতামে ক্লিক করুন। আপনাকে আপনার OMR শীটের প্রধান বিষয়বস্তু এলাকার চারটি কোণায় ক্লিক করতে অনুরোধ করা হবে। অ্যাপ্লিকেশনটি তখন কোনও স্ক্যানিং বিকৃতি সংশোধন করতে এই এলাকাটিকে "ওয়ার্প" বা सीधा করবে।</li>
+                    <li><strong>Draw ROIs (Regions of Interest):</strong> আপনার ওয়ার্পড OMR শীটের বিভিন্ন অংশের উপর আয়তক্ষেত্র আঁকতে "Draw" টুলটি ব্যবহার করুন। এই বিভাগগুলি ছাত্র আইডি, পরীক্ষার কোড বা প্রধান উত্তর বুদবুদের জন্য হতে পারে।</li>
+                    <li><strong>Define ROI Properties:</strong>
+                        <ul>
+                            <li>এটিতে ক্লিক করে একটি ROI নির্বাচন করুন।</li>
+                            <li>বাম দিকের "ROI Properties" প্যানেলে, আপনি নির্বাচিত ROI-এর বৈশিষ্ট্যগুলি সংজ্ঞায়িত করতে পারেন।</li>
+                            <li><strong>Name:</strong> ROI-কে একটি বর্ণনামূলক নাম দিন (যেমন, "ছাত্র আইডি", "বিভাগ এ")।</li>
+                            <li><strong>Type:</strong> ROI-কে একটি প্রকার নির্ধারণ করুন:
+                                <ul>
+                                    <li><code>Identifier</code>: ছাত্র আইডি, রোল নম্বর ইত্যাদির মতো এলাকার জন্য। আপনি বুদবুদের সারি এবং কলামের সংখ্যা, পড়ার ক্রম এবং সংশ্লিষ্ট মানগুলি নির্দিষ্ট করতে পারেন।</li>
+                                    <li><code>Answer</code>: প্রধান উত্তর বিভাগগুলির জন্য। প্রশ্নের সংখ্যা, প্রতি প্রশ্নে বিকল্প এবং প্রতিটি বিকল্পের জন্য মানগুলি (যেমন, A, B, C, D) সংজ্ঞায়িত করুন।</li>
+                                    <li><code>Qrcode</code>: শীটে যেকোনো QR কোডের জন্য।</li>
+                                    <li><code>Annotation</code>: অন্যান্য টীকা বা নোটের জন্য।</li>
+                                </ul>
+                            </li>
+                        </ul>
+                    </li>
+                    <li><strong>Save Template:</strong> আপনি সমস্ত ROI সংজ্ঞায়িত করার পরে, আপনার টেমপ্লেটটি একটি JSON ফাইল হিসাবে সংরক্ষণ করতে "Save Template" বোতামে ক্লিক করুন।</li>
+                </ol>
+            </div>
+
+            <div id="answer-key-scanner" class="section">
+                <h2>Answer Key Scanner</h2>
+                <p>
+                    উত্তর কী স্ক্যানার একটি সম্পূর্ণ OMR শীট স্ক্যান করতে এবং এটি একটি উত্তর কী ফাইল হিসাবে সংরক্ষণ করতে ব্যবহৃত হয়। এই ফাইলটি পরে ছাত্র উত্তরপত্র পরীক্ষা করতে ব্যবহৃত হবে।
+                </p>
+                <h3>Workflow</h3>
+                <ol>
+                    <li>"Answer Key Scanner" ট্যাবে নেভিগেট করুন।</li>
+                    <li><strong>Load Image:</strong> সম্পূর্ণ উত্তর কী শীটের একটি স্ক্যান করা ছবি লোড করতে "Load Image" বোতামে ক্লিক করুন।</li>
+                    <li><strong>Automatic Scanning:</strong> অ্যাপ্লিকেশনটি স্বয়ংক্রিয়ভাবে কোণগুলি সনাক্ত করতে এবং শীটটি স্ক্যান করতে "মাস্টার টেমপ্লেট" (সেটিংসে সেট করা) ব্যবহার করবে।</li>
+                    <li><strong>Manual Correction (if needed):</strong> যদি স্বয়ংক্রিয় স্ক্যান ব্যর্থ হয়, আপনি শীটটি সঠিকভাবে সারিবদ্ধ করতে ম্যানুয়ালি শীটের চারটি কোণায় ক্লিক করতে পারেন।</li>
+                    <li><strong>Adjust Parameters:</strong> স্ক্যানের নির্ভুলতা উন্নত করতে চিত্র প্রক্রিয়াকরণ প্যারামিটার (কনট্রাস্ট, উজ্জ্বলতা, ইত্যাদি) সামঞ্জস্য করতে বাম প্যানেলের স্লাইডার এবং নিয়ন্ত্রণগুলি ব্যবহার করুন। পরিবর্তনগুলি দেখতে "Re-Scan" এ ক্লিক করুন।</li>
+                    <li><strong>Verify Answers:</strong> স্ক্যান করা উত্তরগুলি ডানদিকের প্যানেলে প্রদর্শিত হবে। আপনি যেকোনো ত্রুটি সংশোধন করতে ম্যানুয়ালি বুদবুদগুলি পরীক্ষা বা আনচেক করতে পারেন।</li>
+                    <li><strong>Save Answer Key:</strong> আপনি স্ক্যান করা উত্তরগুলির সাথে সন্তুষ্ট হয়ে গেলে, "Save Answer Key" বোতামে ক্লিক করুন। উত্তর কী একটি JSON ফাইল হিসাবে সংরক্ষণ করা হবে, যার মধ্যে টেমপ্লেট ডেটা, চিত্র সেটিংস এবং সঠিক উত্তরগুলির চূড়ান্ত তালিকা অন্তর্ভুক্ত রয়েছে।</li>
+                </ol>
+            </div>
+
+            <div id="answer-checker" class="section">
+                <h2>Answer Checker</h2>
+                <p>
+                    উত্তর পরীক্ষক অ্যাপ্লিকেশনটির মূল অংশ, যেখানে আপনি এক বা একাধিক উত্তর কী-এর বিপরীতে একাধিক ছাত্র উত্তরপত্র পরীক্ষা করতে পারেন।
+                </p>
+                <h3>Workflow</h3>
+                <ol>
+                    <li>"Answer Checker" ট্যাবে নেভিগেট করুন।</li>
+                    <li><strong>Add Images:</strong> আপনি যে ছাত্র উত্তরপত্র চিত্রগুলি পরীক্ষা করতে চান তা নির্বাচন করতে "Add Images" বোতামে ক্লিক করুন। আপনি একাধিক ফাইল বা একটি সম্পূর্ণ ফোল্ডার নির্বাচন করতে পারেন।</li>
+                    <li><strong>Select Answer Key(s):</strong> ড্রপডাউন তালিকা থেকে উপযুক্ত উত্তর কী ফাইল(গুলি) নির্বাচন করুন। আপনি যদি একাধিক উত্তর কী নির্বাচন করেন, অ্যাপ্লিকেশনটি স্বয়ংক্রিয়ভাবে প্রতিটি শীটের জন্য সঠিক কী খুঁজে বের করার চেষ্টা করবে যা মিলিত শনাক্তকারী (যেমন পরীক্ষার কোড বা বিষয়) এর উপর ভিত্তি করে।</li>
+                    <li><strong>Start Scan:</strong> "Start Scan" বোতামে ক্লিক করুন। অ্যাপ্লিকেশনটি একে একে চিত্রগুলি প্রক্রিয়াকরণ শুরু করবে।
+                        <ul>
+                            <li><strong>Auto Mode:</strong> এই মোডে, অ্যাপ্লিকেশনটি সমস্ত চিত্র স্বয়ংক্রিয়ভাবে প্রক্রিয়াকরণ করার চেষ্টা করবে। যদি এটি একটি শীটে একটি ত্রুটির সম্মুখীন হয়, তবে এটি এড়িয়ে যেতে পারে।</li>
+                            <li><strong>Manual Mode:</strong> এই মোডে, অ্যাপ্লিকেশনটি প্রতিটি শীটে বিরতি দেবে, যা আপনাকে পরবর্তীটিতে যাওয়ার আগে স্ক্যান করা ডেটা যাচাই করতে এবং সংশোধন করতে দেয়।</li>
+                        </ul>
+                    </li>
+                    <li><strong>Review and Correct:</strong> প্রতিটি শীটের জন্য, অ্যাপ্লিকেশনটি সনাক্ত করা উত্তরগুলি হাইলাইট সহ স্ক্যান করা চিত্র প্রদর্শন করে। আপনি ডানদিকের প্যানেলে যেকোনো ভুল সংশোধন করতে পারেন।</li>
+                    <li><strong>Save Results:</strong> ফলাফলগুলি স্বয়ংক্রিয়ভাবে একটি এক্সেল ফাইলে সংরক্ষিত হয়। আপনি সেটিংসে আউটপুট ফর্ম্যাট এবং ফাইলের নাম প্যাটার্ন কনফিগার করতে পারেন।</li>
+                </ol>
+            </div>
+
+            <div id="settings" class="section">
+                <h2>Settings</h2>
+                <p>
+                    সেটিংস ট্যাব আপনাকে অ্যাপ্লিকেশনটির বিভিন্ন দিক কনফিগার করতে দেয়।
+                </p>
+                <h3>Default Paths</h3>
+                <ul>
+                    <li><strong>Base Data Directory:</strong> প্রধান ফোল্ডার যেখানে সমস্ত অ্যাপ্লিকেশন ডেটা (টেমপ্লেট, উত্তর কী, ফলাফল) সংরক্ষণ করা হবে।</li>
+                    <li><strong>Student Data Sheet:</strong> ছাত্র তথ্য ধারণকারী একটি ঐচ্ছিক এক্সেল ফাইল। যদি প্রদান করা হয়, এই ডেটা স্বয়ংক্রিয়ভাবে চূড়ান্ত ফলাফলে অন্তর্ভুক্ত করা যেতে পারে।</li>
+                    <li><strong>Master Template:</strong> উত্তর কী স্ক্যানার এবং উত্তর পরীক্ষক দ্বারা ব্যবহৃত ডিফল্ট টেমপ্লেট ফাইল।</li>
+                </ul>
+                <h3>File Naming & Output Patterns</h3>
+                <p>
+                    এখানে আপনি আপনার আউটপুট ফাইলগুলির নামকরণের জন্য প্যাটার্ন তৈরি এবং পরিচালনা করতে পারেন। এটি আপনার ফলাফলগুলি সংগঠিত করার একটি শক্তিশালী উপায় সরবরাহ করে। আপনি এর জন্য প্যাটার্ন সংজ্ঞায়িত করতে পারেন:
+                </p>
+                <ul>
+                    <li><strong>Excel Filename:</strong> এক্সেল ফাইলের নাম যেখানে ফলাফলগুলি সংরক্ষিত হয়।</li>
+                    <li><strong>Image Renaming:</strong> প্রক্রিয়াকরণের পরে স্ক্যান করা চিত্র ফাইলগুলির পুনঃনামকরণ কীভাবে করা উচিত।</li>
+                    <li><strong>Answer Key Naming:</strong> নতুন উত্তর কীগুলির জন্য ডিফল্ট নামকরণ স্কিম।</li>
+                </ul>
+                <p>
+                    আপনি বর্তমান তারিখ, সময় বা স্ক্যান করা শনাক্তকারী ROI থেকে মানগুলির মতো উপাদানগুলি ব্যবহার করতে পারেন (যেমন, <code>&lt;Exam_Code&gt;_&lt;Subject&gt;.xlsx</code>) ডায়নামিক ফাইলের নাম তৈরি করতে।
+                </p>
+                <h3>Theme</h3>
+                <p>
+                    ফন্ট, ফন্টের আকার এবং রঙ সহ অ্যাপ্লিকেশনটির চেহারা এবং অনুভূতি কাস্টমাইজ করুন।
+                </p>
+            </div>
+
+        </main>
+    </div>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            const sections = document.querySelectorAll(".section");
+            const navLinks = document.querySelectorAll("#sidebar ul li a");
+
+            const observer = new IntersectionObserver(entries => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        navLinks.forEach(link => {
+                            link.classList.remove("active");
+                            if (link.getAttribute("href").substring(1) === entry.target.id) {
+                                link.classList.add("active");
+                            }
+                        });
+                    }
+                });
+            }, { threshold: 0.5 });
+
+            sections.forEach(section => {
+                observer.observe(section);
+            });
+        });
+    </script>
+</body>
+</html>
