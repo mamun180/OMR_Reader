@@ -1,0 +1,3 @@
+APPLICATION_NAME = 'OptiMark Pro'
+APP_VERSION = '1.0.0'
+ENCRYPTION_PASSWORD = 'dummy_password'

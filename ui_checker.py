@@ -18,6 +18,7 @@ import shutil
 import logging
 from theme import apply_stylesheet_and_floatation
 from directory_manager import get_answer_key_dir, get_results_dir
+from settings_manager import save_last_path, load_last_path
 
 logging.basicConfig(filename='app.log', filemode='w', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -205,7 +206,6 @@ class AnswerKeyReviewWidget(QWidget):
             
             self.id_edits[name] = widget
             name_label = QLabel(name)
-            name_label.setStyleSheet("color: black;")
             id_layout.addRow(name_label, widget)
         
         id_widget = QWidget()
@@ -227,7 +227,6 @@ class AnswerKeyReviewWidget(QWidget):
             edit = QLineEdit(ans_str)
             self.ans_edits[q_num] = edit
             q_num_label = QLabel(f"Q{q_num}:")
-            q_num_label.setStyleSheet("color: black;")
             ans_layout.addRow(q_num_label, edit)
         
         ans_widget = QWidget()
@@ -496,8 +495,12 @@ class CheckerWindow(QWidget):
                 self.populate_answer_key_combobox()
 
     def browse_for_answer_key(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Select Answer Key(s)", get_answer_key_dir(), "JSON Files (*.json)")
+        dialog_key = "Select Answer Key(s)"
+        initial_path = load_last_path(dialog_key) or get_answer_key_dir()
+        paths, _ = QFileDialog.getOpenFileNames(self, dialog_key, initial_path, "JSON Files (*.json)")
         if paths:
+            if paths:
+                save_last_path(dialog_key, os.path.dirname(paths[0]))
             self._load_answer_keys(paths)
 
     def _load_answer_keys(self, paths):
@@ -732,11 +735,6 @@ class CheckerWindow(QWidget):
             self.new_excel_filename_edit.setReadOnly(True)
             self.new_excel_filename_edit.setHidden(True)
 
-    def save_settings(self):
-        """Placeholder for saving any checker-specific settings on close."""
-        # Most settings are saved on interaction, but this hook is here if needed.
-        pass
-
     def _init_top_panel(self):
         source_selection_frame = QFrame(); source_selection_frame.setFrameShape(QFrame.Shape.StyledPanel)
         source_selection_layout = QVBoxLayout(source_selection_frame)
@@ -855,15 +853,6 @@ class CheckerWindow(QWidget):
         self.top_panel_layout.setStretch(3, 20)
 
     def _init_left_panel(self):
-        checkbox_layout = QHBoxLayout()
-        self.skip_errors_checkbox = QCheckBox()
-        skip_label = QLabel("<b>Skip images with identifier errors</b>")
-        skip_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        checkbox_layout.addWidget(self.skip_errors_checkbox)
-        checkbox_layout.addWidget(skip_label)
-        checkbox_layout.addStretch()
-        self.left_panel_layout.addLayout(checkbox_layout)
-
         self.identifier_group_box = QGroupBox("Identifiers to Match")
         self.identifier_group_box.setMinimumHeight(130)
         self.identifier_layout = QGridLayout()
@@ -956,8 +945,12 @@ class CheckerWindow(QWidget):
 
     def load_template(self, path=None):
         if self.current_image is None: self.show_toast("Please load an image first.", level='warning'); return
-        if path is None: path, _ = QFileDialog.getOpenFileName(self, "Load Template", "", "JSON Files (*.json)")
+        dialog_key = "Load Template"
+        if path is None: 
+            initial_path = load_last_path(dialog_key)
+            path, _ = QFileDialog.getOpenFileName(self, dialog_key, initial_path, "JSON Files (*.json)")
         if not path: return
+        save_last_path(dialog_key, path)
         try:
             with open(path, 'r') as f: self.template_data = json.load(f)
             self._create_right_panel_widgets()
@@ -975,16 +968,12 @@ class CheckerWindow(QWidget):
             return self.run_scan_process(corners=corners)
         else:
             message = "Automatic corner detection failed."
-            if self.skip_errors_checkbox.isChecked():
-                self.log(f"{message} Skipping image.")
-                self.show_toast(f"{message} Skipping.", level='warning', duration=3000)
-                self._move_image_to_error_folder(self.current_image_index)
-                self._skip_current_image()
-            else:
-                self.show_toast("Corner detection failed. Please click the 4 corners of the sheet.", level='warning', duration=4000)
-                self.enter_manual_corner_mode() # Sets self.is_manual_corner_mode = True
-                self.btn_skip_image.setVisible(True)
-                self.btn_accept_manual_ids.setVisible(True) # Make Accept button visible here
+            self.log(message)
+            self._pause_scan_for_manual_intervention(
+                f"{message} Please click the 4 corners of the sheet or re-wrap.",
+                show_accept_button=False 
+            )
+            self.enter_manual_corner_mode()
             return False
 
     def _rewrap_image(self):
@@ -1048,15 +1037,21 @@ class CheckerWindow(QWidget):
         except Exception as e: 
             message = f"An error occurred during scanning:\n{e}"
             self.log(f"Processing Error: {e}")
-            if self.radio_scan_auto.isChecked():
-                if self.skip_errors_checkbox.isChecked():
-                    self.show_toast(f"{message}\nSkipping image.", level='error', duration=4000)
-                    self._skip_current_image()
-                else:
-                    self._pause_scan_for_manual_intervention(message + "\nPlease skip or re-wrap.", show_accept_button=False)
-            else:
-                QMessageBox.critical(self, "Processing Error", message)
+            self._pause_scan_for_manual_intervention(message + "\nPlease skip or re-wrap.", show_accept_button=False)
             return False
+
+    def _pause_scan_for_manual_intervention(self, message, show_accept_button=True):
+        self.is_scan_stopped = True # This will halt the auto-scan loop
+        self.show_toast(message, level='error', duration=5000)
+
+        # Update button visibility to allow for manual correction
+        self.btn_stop_scan.setVisible(True) # Can always stop
+        self.btn_start_scan.setVisible(False)
+        self.btn_next_image.setVisible(False)
+
+        self.btn_skip_image.setVisible(True)
+        self.btn_rewrap_image.setVisible(True)
+        self.btn_accept_manual_ids.setVisible(show_accept_button)
 
     def _get_processed_preview_image(self, image, params):
         if image is None: return None
@@ -1520,14 +1515,54 @@ class CheckerWindow(QWidget):
         current_ids = {name: self._format_identifier(widget.combo_box.currentText() if isinstance(widget, IdentifierDropdownWidget) else widget.value_edit.text()) for name, widget in self.identifier_widgets.items()}
         ids = current_ids
         student_info = self._get_student_info(ids)
+
+        # --- Data Aggregation for Validation ---
+        now = datetime.datetime.now()
+        use_pattern = bool(self.active_output_pattern)
         
+        correct_count, score, total_expected, answered = 0, 0, 0, 0
+        current_answers = {q: [b.text() for b in w.option_group.buttons() if b.isChecked()] for q, w in self.question_widgets.items()}
+        for q_num in self.question_widgets:
+            if self.correct_answers_map.get(q_num): total_expected += 1
+        for q_num, detected in current_answers.items():
+            if detected:
+                answered += 1
+                if set(detected).issubset(set(self.correct_answers_map.get(q_num, []))): correct_count += 1; score += 1
+
+        scan_data = {
+            'Timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
+            'Image_Path': 'placeholder', # Will be updated after potential rename
+            **ids,
+            'Score': score, 'Correct': correct_count, 'Unanswered': max(0, total_expected - answered), 'Total_Questions': total_expected
+        }
+        all_data = {**student_info, **scan_data}
+
+        # --- Strict Validation (User Request) ---
+        if use_pattern:
+            selected_cols = self.active_output_pattern.get('selected_columns', [])
+            required_cols_from_pattern = [
+                c for c in selected_cols 
+                if c not in ["Student Answers (per question)", "Correctness Status (per question)"]
+            ]
+            
+            missing_data_cols = []
+            for col in required_cols_from_pattern:
+                if all_data.get(col) is None or str(all_data.get(col)).strip() == '':
+                    missing_data_cols.append(col)
+            
+            if missing_data_cols:
+                error_message = f"Save aborted. Missing required data for: {', '.join(missing_data_cols)}."
+                self.log(error_message)
+                self.show_toast(error_message, level='error', duration=5000)
+                self._update_image_status(self.image_paths[self.current_image_index], "Error")
+                return # Abort both rename and save
+
         # --- Image Renaming ---
         original_path = self.image_paths[self.current_image_index]
         image_path_to_save = original_path
 
         if self.active_output_pattern and self.active_output_pattern.get('rename_components'):
             try:
-                now = datetime.datetime.now()
                 filename_parts = []
                 for component in self.active_output_pattern['rename_components']:
                     part = ""
@@ -1535,7 +1570,7 @@ class CheckerWindow(QWidget):
                     elif component == 'date': part = now.strftime('%d_%b_%y')
                     elif component.startswith("Data: "):
                         col_name = component.replace("Data: ", "", 1)
-                        part = str(student_info.get(col_name, 'NA')).replace(" ", "_")
+                        part = str(all_data.get(col_name, 'NA')).replace(" ", "_")
                     else: # It's an ROI name
                         part = ids.get(component, 'NA').replace(" ", "_")
                     filename_parts.append(part)
@@ -1568,9 +1603,10 @@ class CheckerWindow(QWidget):
                 self.log(f"Error during image renaming: {e}")
                 self.show_toast(f"Error creating new image name: {e}", 'error')
 
+        all_data['Image_Path'] = image_path_to_save
+
         # --- Path and Data Generation ---
         output_path = ""
-        now = datetime.datetime.now() # Get timestamp for excel naming
         if self.checkbox_append_excel.isChecked():
             output_path = self.output_excel_path_edit.text()
             if not output_path:
@@ -1588,7 +1624,7 @@ class CheckerWindow(QWidget):
                     elif component == 'date': part = now.strftime('%d_%b_%y')
                     elif component.startswith("Data: "):
                         col_name = component.replace("Data: ", "", 1)
-                        part = str(student_info.get(col_name, 'NA')).replace(" ", "_")
+                        part = str(all_data.get(col_name, 'NA')).replace(" ", "_")
                     else: # It's an ROI name
                         part = ids.get(component, 'NA').replace(" ", "_")
                     filename_parts.append(part)
@@ -1602,62 +1638,42 @@ class CheckerWindow(QWidget):
                 except Exception as e: QMessageBox.critical(self, "Error", f"Could not create output directory:\n{e}"); return
             output_path = os.path.join(output_dir, filename)
 
-        # --- Data Calculation ---
-        correct_count, score, total_expected, answered = 0, 0, 0, 0
-        current_answers = {q: [b.text() for b in w.option_group.buttons() if b.isChecked()] for q, w in self.question_widgets.items()}
-        for q_num in self.question_widgets:
-            if self.correct_answers_map.get(q_num): total_expected += 1
-        for q_num, detected in current_answers.items():
-            if detected:
-                answered += 1
-                if set(detected).issubset(set(self.correct_answers_map.get(q_num, []))): correct_count += 1; score += 1
-        
-        # --- Column Selection & Data Structuring ---
-        row_data = {}
+        # --- Data Structuring with Strict Column Schema ---
         ordered_columns = []
-        use_pattern = bool(self.active_output_pattern)
-        selected_cols = self.active_output_pattern['selected_columns'] if use_pattern else []
+        if use_pattern:
+            # FIX #1: Build the column list strictly from the pattern, not from the available data
+            for col_name in selected_cols:
+                if col_name == "Student Answers (per question)":
+                    ordered_columns.extend([f'Q{q_num}' for q_num in sorted(current_answers.keys(), key=int)])
+                elif col_name == "Correctness Status (per question)":
+                    ordered_columns.extend([f'Q{q_num}_Correct' for q_num in sorted(current_answers.keys(), key=int)])
+                else:
+                    ordered_columns.append(col_name) # Always add the column name
+        else:
+            ordered_columns.extend(list(all_data.keys()))
+            ordered_columns.extend([f'Q{q_num}' for q_num in sorted(current_answers.keys(), key=int)])
+            ordered_columns.extend([f'Q{q_num}_Correct' for q_num in sorted(current_answers.keys(), key=int)])
 
-        scan_data = {
-            'Timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
-            'Image_Path': image_path_to_save,
-            **ids,
-            'Score': score, 'Correct': correct_count, 'Unanswered': max(0, total_expected - answered), 'Total_Questions': total_expected
-        }
-        
-        all_data = {**student_info, **scan_data}
-
+        # Add per-question data to the main data dictionary for lookup
         for q_num in sorted(current_answers.keys(), key=int):
             detected_opts = current_answers.get(q_num, [])
             is_correct = set(detected_opts).issubset(set(self.correct_answers_map.get(q_num,[]))) if detected_opts else False
             all_data[f'Q{q_num}'] = ", ".join(detected_opts) if detected_opts else "Unanswered"
             all_data[f'Q{q_num}_Correct'] = 'Yes' if is_correct else 'No'
 
-        if use_pattern:
-            for col_name in selected_cols:
-                if col_name == "Student Answers (per question)":
-                    for q_num in sorted(current_answers.keys(), key=int): ordered_columns.append(f'Q{q_num}')
-                elif col_name == "Correctness Status (per question)":
-                    for q_num in sorted(current_answers.keys(), key=int): ordered_columns.append(f'Q{q_num}_Correct')
-                elif col_name in all_data:
-                    ordered_columns.append(col_name)
-            row_data = {col: all_data.get(col) for col in ordered_columns}
-        else:
-            row_data = all_data
-            ordered_columns = list(row_data.keys())
+        # Create the row by looking up each required column in the full data set.
+        # all_data.get(col) will return None if a key is missing, which pandas handles correctly.
+        row_data = {col: all_data.get(col) for col in ordered_columns}
+        df = pd.DataFrame([row_data], columns=ordered_columns) # Explicitly set columns to guarantee order and schema
 
-        df = pd.DataFrame([row_data], columns=ordered_columns) # Revert to original df creation
-
+        # --- Writing to Excel ---
         try:
             if os.path.exists(output_path):
                 with pd.ExcelFile(output_path) as xls:
                     existing_df = pd.read_excel(xls, sheet_name='Result')
-                # Concat will create a superset of columns, filling missing values with NaN
                 combined_df = pd.concat([existing_df, df], ignore_index=True)
             else:
-                # For a new file, we use the columns explicitly determined by the pattern or present in row_data.
-                # 'df' is already created with the correct 'ordered_columns' from the logic above.
-                combined_df = df # This is the main change: use 'df' directly.
+                combined_df = df
 
             combined_df.to_excel(output_path, sheet_name='Result', index=False)
             self.show_toast(f"Result saved to {os.path.basename(output_path)}", level='info')
@@ -1798,8 +1814,11 @@ class CheckerWindow(QWidget):
 
 
     def _select_output_excel_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select Excel File to Append to", "", "Excel Files (*.xlsx)")
+        dialog_key = "Select Excel File to Append to"
+        initial_path = load_last_path(dialog_key)
+        path, _ = QFileDialog.getOpenFileName(self, dialog_key, initial_path, "Excel Files (*.xlsx)")
         if path: 
+            save_last_path(dialog_key, path) 
             self.output_excel_path_edit.setText(path)
             # Save the path when it's selected
             settings = QSettings("OptiMark Pro", "Defaults")
@@ -1885,13 +1904,19 @@ class CheckerWindow(QWidget):
             self._select_image_folder()
 
     def _select_image_files(self):
-        selected_paths, _ = QFileDialog.getOpenFileNames(self, "Select Multiple Images", "", "Image Files (*.png *.jpg *.bmp)")
+        dialog_key = "Select Multiple Images"
+        initial_path = load_last_path(dialog_key)
+        selected_paths, _ = QFileDialog.getOpenFileNames(self, dialog_key, initial_path, "Image Files (*.png *.jpg *.bmp)")
         if selected_paths:
+            save_last_path(dialog_key, os.path.dirname(selected_paths[0]))
             self._load_image_paths(sorted(selected_paths))
 
     def _select_image_folder(self):
-        folder_path = QFileDialog.getExistingDirectory(self, "Select Image Folder")
+        dialog_key = "Select Image Folder"
+        initial_path = load_last_path(dialog_key)
+        folder_path = QFileDialog.getExistingDirectory(self, dialog_key, initial_path)
         if folder_path:
+            save_last_path(dialog_key, folder_path)
             image_paths_to_load = []
             for root, _, files in os.walk(folder_path):
                 for file in files:
@@ -2042,14 +2067,9 @@ class CheckerWindow(QWidget):
                           for n in checked_identifiers if not scanned_ids.get(n,'').strip() or any(e in scanned_ids.get(n,'') for e in ["ERR", "MULTI", "_"])]
         
         if error_messages:
-            if self.skip_errors_checkbox.isChecked():
-                self.log(f"Skipping image due to identifier scan errors: {'; '.join(error_messages)}")
-                self._move_image_to_error_folder(self.current_image_index)
-                return 'SKIP'
-            else:
-                message = "One or more required identifiers failed to scan correctly.\n\n" + "\n".join(error_messages) + "\n\nPlease correct the values, then click 'Accept & Continue' or 'Skip Image'."
-                self._pause_scan_for_manual_intervention(message, show_accept_button=True)
-                return 'PAUSE'
+            message = "One or more required identifiers failed to scan correctly.\n\n" + "\n".join(error_messages) + "\n\nPlease correct the values, then click 'Accept & Continue' or 'Skip Image'."
+            self._pause_scan_for_manual_intervention(message, show_accept_button=True)
+            return 'PAUSE'
 
         # 2. If student data is loaded, check for a match.
         if self.student_data is not None and not self.student_data.empty:
@@ -2059,13 +2079,8 @@ class CheckerWindow(QWidget):
                 scanned_value = scanned_ids.get(lookup_roi_name, 'N/A') if lookup_roi_name != "configured lookup ROI" else 'N/A'
                 message = f"Identifier value '{scanned_value}' for '{lookup_roi_name}' not found in student data."
 
-                if self.skip_errors_checkbox.isChecked():
-                    self.log(f"Skipping image: {message}")
-                    self._move_image_to_error_folder(self.current_image_index)
-                    return 'SKIP'
-                else:
-                    self._pause_scan_for_manual_intervention(message + "\nPlease correct the value, accept, or skip.", show_accept_button=True)
-                    return 'PAUSE'
+                self._pause_scan_for_manual_intervention(message + "\nPlease correct the value, accept, or skip.", show_accept_button=True)
+                return 'PAUSE'
         
         # 3. All checks passed
         return 'PASS'
@@ -2135,14 +2150,8 @@ class CheckerWindow(QWidget):
             message = f"No matching answer key found for {os.path.basename(image_path)}."
             self.current_matched_key_path = "Not Found"
             self._update_image_status(image_path, "Error")
-            if self.skip_errors_checkbox.isChecked():
-                self.log(f"ERROR: {message} Skipping image.")
-                self.show_toast(f"{message} Skipping.", level='warning', duration=4000)
-                self._move_image_to_error_folder(self.current_image_index)
-                self._skip_current_image()
-            else:
-                self.log(f"ERROR: {message} Pausing scan.")
-                self._pause_scan_for_manual_intervention(message + "\nPlease correct the identifiers, accept, or skip.", show_accept_button=True)
+            self.log(f"ERROR: {message} Pausing scan.")
+            self._pause_scan_for_manual_intervention(message + "\nPlease correct the identifiers, accept, or skip.", show_accept_button=True)
             return
 
         self.current_matched_key_path = matching_key['path']
@@ -2160,25 +2169,20 @@ class CheckerWindow(QWidget):
         self._skip_current_image()
 
     def _skip_current_image(self):
-        current_path = self.image_paths[self.current_image_index]
-        log_msg = f"Skipping image: {os.path.basename(current_path)}"
+        if not (0 <= self.current_image_index < len(self.image_paths)): return
+        
+        image_path = self.image_paths[self.current_image_index]
+        self.log(f"User manually skipped image: {os.path.basename(image_path)}")
 
-        if current_path in self.image_list_items:
-            item = self.image_list_items[current_path]
-            if not item.text().startswith("[Done]"):
-                self._update_image_status(current_path, "Skipped")
-                self.log(log_msg)
-            else:
-                self.log(f"Moving to next image after: {os.path.basename(current_path)}")
-        else:
-            self.log(log_msg)
-
-        self.current_image_index += 1
-        if self.radio_scan_auto.isChecked():
-            QApplication.processEvents()
-            self._run_auto_batch_scan()
-        else:
-            self._process_current_image_manual_mode()
+        # Move the file to the "Error Image" folder
+        self._move_image_to_error_folder(self.current_image_index)
+        
+        # Update the UI list with the final status for the (now moved) image
+        new_image_path = self.image_paths[self.current_image_index]
+        self._update_image_status(new_image_path, "Skipped")
+        
+        # Now proceed to the next image
+        self._process_next_image()
 
     def _accept_manual_ids_and_continue(self):
         self.log("Attempting to accept manual identifiers...")

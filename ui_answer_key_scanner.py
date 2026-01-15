@@ -13,6 +13,7 @@ import os
 from core_omr import OMREngine
 from theme import apply_stylesheet_and_floatation
 from directory_manager import get_template_dir, get_answer_key_dir
+from settings_manager import save_last_path, load_last_path
 
 
 class ManualKeyCreatorDialog(QDialog):
@@ -180,9 +181,12 @@ class ManualKeyCreatorDialog(QDialog):
         answer_key_dir = get_answer_key_dir()
         save_path = os.path.join(answer_key_dir, f"{filename}.json")
 
-        path, _ = QFileDialog.getSaveFileName(self, "Save Manual Answer Key", save_path, "JSON Files (*.json)")
+        dialog_key = "Save Manual Answer Key"
+        initial_path = load_last_path(dialog_key) or save_path
+        path, _ = QFileDialog.getSaveFileName(self, dialog_key, initial_path, "JSON Files (*.json)")
 
         if path:
+            save_last_path(dialog_key, path)
             try:
                 with open(path, 'w') as f:
                     json.dump(data_to_save, f, indent=4)
@@ -507,8 +511,11 @@ class AnswerKeyScannerWindow(QWidget):
             self.scene.clear()
 
     def load_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load Answer Key Image", "", "Image Files (*.png *.jpg *.bmp)")
+        dialog_key = "Load Answer Key Image"
+        initial_path = load_last_path(dialog_key)
+        path, _ = QFileDialog.getOpenFileName(self, dialog_key, initial_path, "Image Files (*.png *.jpg *.bmp)")
         if path:
+            save_last_path(dialog_key, path)
             self.reset_state(full_reset=True); self.current_image = cv2.imread(path)
             if self.current_image is None: QMessageBox.critical(self, "Error", f"Could not read image: {path}"); self.reset_state(); return
             self.display_image(self.current_image)
@@ -535,8 +542,14 @@ class AnswerKeyScannerWindow(QWidget):
 
     def load_template(self, path=None):
         if self.current_image is None: QMessageBox.warning(self, "No Image", "Please load an image first."); return
-        if path is None: path, _ = QFileDialog.getOpenFileName(self, "Load Template", get_template_dir(), "JSON Files (*.json)")
+        
+        dialog_key = "Load Template"
+        if path is None: 
+            initial_path = load_last_path(dialog_key) or get_template_dir()
+            path, _ = QFileDialog.getOpenFileName(self, dialog_key, initial_path, "JSON Files (*.json)")
         if not path: return
+
+        save_last_path(dialog_key, path) # Save the selected path
 
         # Reset state for the new template, but keep the current image
         self.reset_state(full_reset=False)
@@ -991,8 +1004,11 @@ class AnswerKeyScannerWindow(QWidget):
         answer_key_dir = get_answer_key_dir()
         save_path = os.path.join(answer_key_dir, f"{filename}.json")
 
-        path, _ = QFileDialog.getSaveFileName(self, "Save Answer Key", save_path, "JSON Files (*.json)")
+        dialog_key = "Save Answer Key"
+        initial_path = load_last_path(dialog_key) or save_path
+        path, _ = QFileDialog.getSaveFileName(self, dialog_key, initial_path, "JSON Files (*.json)")
         if path:
+            save_last_path(dialog_key, path)
             try:
                 with open(path, 'w') as f:
                     json.dump(data_to_save, f, indent=4)

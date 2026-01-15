@@ -11,6 +11,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSettings
 from PyQt6.QtGui import QImage, QPixmap
 import cv2
 import numpy as np
+from settings_manager import save_last_path, load_last_path
 
 class ImageSettingsWidget(QWidget):
     """A widget for adjusting image processing parameters."""
@@ -118,7 +119,7 @@ class ImageSettingsWidget(QWidget):
         return {
             'contrast': float(self.contrast_edit.text()),
             'brightness': int(self.brightness_edit.text()),
-            'blur': int(self.blur_edit.text().split('x')[0]),
+            'blur': (int(self.blur_edit.text().split('x')[0]) - 1) // 2,
             'rotation': float(self.rotation_edit.text()),
             'adaptive_c': int(self.adaptive_c_edit.text()),
             'threshold': float(self.threshold_edit.text()) / 100.0,
@@ -130,7 +131,7 @@ class ImageSettingsWidget(QWidget):
         """Sets the sliders and edits from a dictionary of parameters."""
         self.contrast_slider.setValue(int(params.get('contrast', 1.3) * 10))
         self.brightness_slider.setValue(params.get('brightness', 35))
-        self.blur_slider.setValue(params.get('blur', 11)//2)
+        self.blur_slider.setValue(params.get('blur', 5))
         self.rotation_slider.setValue(int(params.get('rotation', 0.0) * 10))
         self.adaptive_c_slider.setValue(int(params.get('adaptive_c', 1)))
         self.threshold_slider.setValue(int(params.get('threshold', 0.08) * 100))
@@ -140,7 +141,7 @@ class ImageSettingsWidget(QWidget):
 
 def get_default_image_params():
     return {
-        'contrast': 1.3, 'brightness': 35, 'blur': 11, 'rotation': 0.0,
+        'contrast': 1.3, 'brightness': 35, 'blur': 5, 'rotation': 0.0,
         'adaptive_c': 1, 'threshold': 0.08, 'method': 'contour', 'transparency': 143
     }
 
@@ -244,8 +245,11 @@ class ImageSettingsEditor(QDialog):
         print("Saved persistent image settings.")
 
     def load_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load Sample Image")
+        dialog_key = "Load Sample Image"
+        initial_path = load_last_path(dialog_key)
+        path, _ = QFileDialog.getOpenFileName(self, dialog_key, initial_path)
         if path:
+            save_last_path(dialog_key, path)
             self.original_image = cv2.imread(path)
             self.update_preview()
 

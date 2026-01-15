@@ -14,6 +14,7 @@ from PyQt6.QtGui import QColor, QPalette
 from ui_image_editor import ImageSettingsEditor
 from theme import apply_stylesheet_and_floatation
 from directory_manager import get_default_base_dir_path
+from settings_manager import save_last_path, load_last_path
 
 class NamingOutputDialog(QDialog):
     pattern_saved = pyqtSignal(str)
@@ -460,12 +461,18 @@ class SettingsPage(QWidget):
         self._update_pattern_summary()
 
     def browse_file(self, key, caption, file_filter):
-        path, _ = QFileDialog.getOpenFileName(self, caption, "", file_filter)
-        if path: self.line_edits[key].setText(path)
+        initial_path = load_last_path(caption)
+        path, _ = QFileDialog.getOpenFileName(self, caption, initial_path, file_filter)
+        if path:
+            save_last_path(caption, path)
+            self.line_edits[key].setText(path)
 
     def browse_folder(self, key, caption):
-        path = QFileDialog.getExistingDirectory(self, caption)
-        if path: self.line_edits[key].setText(path)
+        initial_path = load_last_path(caption)
+        path = QFileDialog.getExistingDirectory(self, caption, initial_path)
+        if path:
+            save_last_path(caption, path)
+            self.line_edits[key].setText(path)
 
     def select_theme_color(self):
         color = QColorDialog.getColor();

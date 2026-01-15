@@ -1,3 +1,4 @@
+import os
 from PyQt6.QtCore import QSettings
 
 def get_default_image_settings():
@@ -64,3 +65,25 @@ def revert_image_settings():
     settings = QSettings("OptiMark Pro", "ImageSettings")
     settings.clear()
     settings.sync()
+
+def save_last_path(dialog_key, path):
+    """
+    Saves the last used path for a specific file dialog.
+    """
+    if path:
+        settings = QSettings("OptiMark Pro", "FileDialogPaths")
+        # If the path is a file, get its directory
+        if os.path.isfile(path):
+            dir_path = os.path.dirname(path)
+        else:
+            dir_path = path
+        settings.setValue(dialog_key, dir_path)
+        settings.sync()
+
+def load_last_path(dialog_key):
+    """
+    Loads the last used path for a specific file dialog.
+    Returns an empty string if not found.
+    """
+    settings = QSettings("OptiMark Pro", "FileDialogPaths")
+    return settings.value(dialog_key, "")

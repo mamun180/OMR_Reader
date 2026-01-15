@@ -13,8 +13,7 @@ from corner_detector import CornerDetector
 from core_omr import OMREngine
 from theme import apply_stylesheet_and_floatation
 from directory_manager import get_template_dir
-from directory_manager import get_template_dir
-from directory_manager import get_template_dir
+from settings_manager import save_last_path, load_last_path
 
 
 
@@ -676,8 +675,11 @@ class TemplateBuilder(QWidget):
         self.template_combobox.addItem("Browse for template...")
 
     def browse_for_template(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load Template", get_template_dir(), "JSON Files (*.json)")
+        dialog_key = "Load Template"
+        initial_path = load_last_path(dialog_key) or get_template_dir()
+        path, _ = QFileDialog.getOpenFileName(self, dialog_key, initial_path, "JSON Files (*.json)")
         if path:
+            save_last_path(dialog_key, path)
             self.load_template_action(path=path)
 
     def on_template_selected(self, index):
@@ -1066,8 +1068,11 @@ class TemplateBuilder(QWidget):
             focused_widget.setFocus()
             
     def load_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open Image")
+        dialog_key = "Open Image"
+        initial_path = load_last_path(dialog_key)
+        path, _ = QFileDialog.getOpenFileName(self, dialog_key, initial_path)
         if path:
+            save_last_path(dialog_key, path)
             self.current_image = cv2.imread(path)
             if self.current_image is None:
                 self.log(f"Error: Could not read image at {path}")
@@ -1204,8 +1209,11 @@ class TemplateBuilder(QWidget):
         }
 
         template_dir = get_template_dir()
-        path, _ = QFileDialog.getSaveFileName(self, "Save Template", template_dir, "JSON Files (*.json)")
+        dialog_key = "Save Template"
+        initial_path = load_last_path(dialog_key) or template_dir
+        path, _ = QFileDialog.getSaveFileName(self, dialog_key, initial_path, "JSON Files (*.json)")
         if path:
+            save_last_path(dialog_key, path)
             try:
                 with open(path, 'w') as f:
                     json.dump(template_data, f, indent=4, cls=NumpyEncoder)
