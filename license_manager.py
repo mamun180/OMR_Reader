@@ -157,3 +157,41 @@ def verify_license():
             return False, "Server returned an invalid response."
         except Exception as e:
             return False, f"An unexpected error occurred during online verification: {e}"
+
+
+def record_omr_scans(count=1):
+    """
+    Reports that `count` OMR sheets were scanned.
+    Only decrements the server counter for COUNT_BASED licenses.
+    Returns (success: bool, message: str, remaining: int).
+    -1 for remaining means unlimited (non-count-based license).
+    """
+    license_data = load_license_key()
+    if not license_data:
+        return False, "No license data found.", 0
+
+    license_key = license_data.get("license_key")
+    if not license_key:
+        return False, "No license key in license file.", 0
+
+    payload = {
+        "key": license_key,
+        "machine_hash": get_machine_hash(),
+        "app_name": "OMRApp",
+        "request_type": "use_scans",
+        "count": max(1, int(count))
+    }
+
+    try:
+        response = requests.post(LICENSE_URL, json=payload, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        remaining = data.get("remaining", -1)
+        if data.get("status") == "OK":
+            return True, f"Recorded {count} scan(s). Remaining: {remaining}", remaining
+        else:
+            return False, data.get("message", "Server rejected the scan record."), remaining
+    except requests.exceptions.RequestException as e:
+        return False, f"Network error while recording scan: {e}", -1
+    except Exception as e:
+        return False, f"Unexpected error while recording scan: {e}", -1

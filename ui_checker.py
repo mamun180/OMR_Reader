@@ -2,8 +2,9 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLay
                              QGraphicsView, QGraphicsScene, QFileDialog, QMessageBox, QGraphicsPixmapItem, QInputDialog,
                              QSplitter, QScrollArea, QCheckBox, QButtonGroup, QLineEdit, QGroupBox, QSlider, QToolButton, QGraphicsItem,
                              QGridLayout, QRadioButton, QComboBox, QApplication, QTextEdit, QFrame, QDialog, QListWidget, QDialogButtonBox, QListWidgetItem,
-                             QFormLayout, QGraphicsOpacityEffect, QTabWidget)
-from PyQt6.QtGui import QImage, QPixmap, QColor, QBrush, QPen, QPolygonF, QPalette
+                             QFormLayout, QGraphicsOpacityEffect, QTabWidget,
+                             QTableWidget, QTableWidgetItem, QHeaderView)
+from PyQt6.QtGui import QImage, QPixmap, QColor, QBrush, QPen, QPolygonF, QPalette, QShortcut, QKeySequence
 from PyQt6.QtCore import Qt, QRectF, QPointF, QEvent, QSettings, QDateTime, pyqtSignal, QTimer, QPropertyAnimation, QStandardPaths
 import sys
 import json
@@ -16,9 +17,15 @@ from openpyxl import load_workbook
 from core_omr import OMREngine
 import shutil
 import logging
+import re
 from theme import apply_stylesheet_and_floatation
 from directory_manager import get_answer_key_dir, get_results_dir
 from settings_manager import save_last_path, load_last_path
+from cache_manager import apply_identifier_reference
+from ui_match_dialogs import MultipleMatchesDialog, SingleSecondaryMatchDialog, ManualCorrectionDialog
+from scanner_manager import ScannerManager
+from export_manager import ExportManager
+from license_manager import record_omr_scans, load_license_key
 
 logging.basicConfig(filename='app.log', filemode='w', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -88,6 +95,65 @@ class Toast(QWidget):
         self.fade_out_animation.finished.connect(self.close)
         self.fade_out_animation.start()
 
+
+class MismatchAcceptDialog(QDialog):
+    def __init__(self, mismatches, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Data Mismatch Detected")
+        self.setMinimumWidth(450)
+        layout = QVBoxLayout(self)
+
+        message = "<p>A primary key match was found, but the following scanned data does not match the student record:</p>"
+        
+        table = "<table border='1' style='border-collapse: collapse; width:100%;' cellpadding='5'><tr><th>Field</th><th>Scanned Value</th><th>Expected Value</th></tr>"
+        for item in mismatches:
+            table += f"<tr><td><b>{item['roi']}</b></td><td style='color:red;'>{item['scanned']}</td><td style='color:green;'>{item['expected']}</td></tr>"
+        table += "</table>"
+        
+        layout.addWidget(QLabel(message))
+        layout.addWidget(QLabel(table))
+        
+        info_label = QLabel("\n<p>How would you like to proceed?</p>")
+        layout.addWidget(info_label)
+        
+        # Define custom button roles for clarity
+        self.AcceptScannedRole = QDialogButtonBox.ButtonRole.YesRole
+        self.UseExpectedRole = QDialogButtonBox.ButtonRole.AcceptRole
+        self.ManualEditRole = QDialogButtonBox.ButtonRole.ActionRole
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.addButton("Accept Scanned", self.AcceptScannedRole)
+        self.buttons.addButton("Use Expected Values", self.UseExpectedRole)
+        self.buttons.addButton("Manual Edit", self.ManualEditRole)
+
+        self.buttons.clicked.connect(self.button_clicked)
+
+        self.remember_checkbox = QCheckBox("Remember my choice for this session")
+        layout.addWidget(self.remember_checkbox)
+
+        layout.addWidget(self.buttons)
+        
+        self.choice = QDialogButtonBox.StandardButton.Cancel
+
+    def button_clicked(self, button):
+        role = self.buttons.buttonRole(button)
+        if role == self.AcceptScannedRole:
+            self.choice = QDialogButtonBox.StandardButton.Yes
+        elif role == self.UseExpectedRole:
+            self.choice = QDialogButtonBox.StandardButton.Apply
+        elif role == self.ManualEditRole:
+            self.choice = QDialogButtonBox.StandardButton.Edit
+        else:
+            self.choice = QDialogButtonBox.StandardButton.Cancel
+        self.accept()
+
+    def exec(self):
+        super().exec()
+        return self.choice
+
+    def is_remember_checked(self):
+        return self.remember_checkbox.isChecked()
+
 class CornerHandle(QGraphicsPixmapItem):
     def __init__(self, x, y, parent_window):
         pixmap = QPixmap(10, 10); pixmap.fill(QColor("red")); super().__init__(pixmap)
@@ -155,7 +221,7 @@ class QuestionAnswerWidget(QWidget):
         q_label = QLabel(f"Q{self.q_num}:")
         q_label.setStyleSheet(f"color: {panel_text_color.name()};") # Apply theme color
         layout.addWidget(q_label)
-        self.option_group = QButtonGroup(self); self.option_group.setExclusive(multi_ans_strategy == "wrong")
+        self.option_group = QButtonGroup(self); self.option_group.setExclusive(False)
         for i, option_char in enumerate(options):
             checkbox = QCheckBox(option_char)
             if option_char in selected_options: checkbox.setChecked(True)
@@ -266,6 +332,13 @@ class AnswerKeyReviewWidget(QWidget):
             if self.parent() and hasattr(self.parent(), 'show_toast'):
                 self.parent().show_toast("Cannot save: No file path for this answer key.", level='error')
 
+# Match status constants for clarity
+MATCH_PRIMARY = "PRIMARY_MATCH"
+MATCH_SINGLE_SECONDARY = "SINGLE_SECONDARY_MATCH"
+MATCH_MULTIPLE_SECONDARY = "MULTIPLE_SECONDARY_MATCHES"
+MATCH_NO_MATCH = "NO_MATCH"
+MATCH_PRIMARY_MISMATCH_SECONDARY = "PRIMARY_MATCH_MISMATCH_SECONDARY"
+
 class CheckerWindow(QWidget):
     log_updated = pyqtSignal()
     image_selection_updated = pyqtSignal()
@@ -273,11 +346,20 @@ class CheckerWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setObjectName("CheckerWindow") 
+
+        self.scanner_manager = ScannerManager()
+        self.scanner_manager.image_scanned.connect(self._on_hardware_image_scanned)
+        self.scanner_manager.error_occurred.connect(lambda msg: QMessageBox.critical(self, "Scanner Error", msg))
+        self.export_manager = ExportManager()
         
         self.identifier_input_timer = QTimer(self)
         self.identifier_input_timer.setSingleShot(True)
-        self.identifier_input_timer.setInterval(400) # Debounce timer for live re-scan
+        self.identifier_input_timer.setInterval(200) # Debounce timer for live re-scan
         self.identifier_input_timer.timeout.connect(self._live_rescan_from_identifiers)
+
+        self.auto_scan_preview_timer = QTimer(self)
+        self.auto_scan_preview_timer.setSingleShot(True)
+        self.auto_scan_preview_timer.timeout.connect(self._advance_scan_process)
 
         self.apply_theme()
 
@@ -290,8 +372,7 @@ class CheckerWindow(QWidget):
         self.is_manual_corner_mode = False
         self.is_scan_stopped = False
         self.manual_corners, self.corner_polygon = [], None
-        self.identifier_group_box = None
-        self.identifier_layout = None
+        self.identifier_override_widgets = {}
         self.identifier_widgets = {}
         self.question_widgets = {}
         self.image_pixmap_item = None
@@ -306,9 +387,24 @@ class CheckerWindow(QWidget):
             'adaptive_c': 3, 'threshold': 0.05, 'method': 'contour',
             'grayscale': False, 'transparency': 143
         }
-        self.active_renamer_pattern = None
         self.active_output_pattern = None
         self.student_data = None
+        self.remembered_mismatch_choice = None
+        self.remembered_secondary_match_choice = None
+        self.last_zoom_transform = None
+
+        # --- NEW: Load Advanced Matching Rules ---
+        self.advanced_matching_settings = QSettings("OptiMark Pro", "AdvancedMatchingPatterns")
+        self.defaults_settings = QSettings("OptiMark Pro", "Defaults")
+        self.active_matching_rule_name = self.defaults_settings.value("active_matching_pattern", "")
+        self.active_matching_rule = self._load_matching_rule_by_name(self.active_matching_rule_name)
+        if self.active_matching_rule:
+            self.log(f"Loaded active matching rule: '{self.active_matching_rule_name}'")
+        else:
+            self.log("No advanced matching rule configured or found.")
+        self.student_info_for_output = None # Initialize student info for output preview
+        # --- END NEW ---
+
         self.bubble_items = {'identifier': [], 'answer': []}
         self.current_review_index = 0
         self.review_widgets = []
@@ -398,9 +494,14 @@ class CheckerWindow(QWidget):
         self.zoom_out_button = QToolButton(self.view)
         self.zoom_out_button.setText('-')
         self.zoom_out_button.clicked.connect(self.zoom_out)
-        # Result Preview Label
-        self.result_preview_label = QLabel("Excel Output:")
-        self.main_layout.addWidget(self.result_preview_label)
+        self.result_preview_table = QTableWidget(1, 0)
+        self.result_preview_table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        self.result_preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.result_preview_table.verticalHeader().setVisible(False)
+        self.result_preview_table.setFixedHeight(52)
+        self.result_preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.result_preview_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.main_layout.addWidget(self.result_preview_table)
 
         self.bottom_panel_widget = QWidget()
         bottom_layout = QHBoxLayout(self.bottom_panel_widget)
@@ -419,13 +520,25 @@ class CheckerWindow(QWidget):
 
         bottom_layout.addStretch()
 
-        # Inspector Panel
-        self.inspector_pixel_label = QLabel("Pixel Count: N/A")
-        self.inspector_contour_label = QLabel("Contour Area: N/A")
-        self.inspector_fill_label = QLabel("Fill %: N/A")
-        bottom_layout.addWidget(self.inspector_pixel_label)
-        bottom_layout.addWidget(self.inspector_contour_label)
-        bottom_layout.addWidget(self.inspector_fill_label)
+        self.btn_toggle_debug = QPushButton("Debug ▶")
+        self.btn_toggle_debug.setCheckable(True)
+        self.btn_toggle_debug.setFixedWidth(74)
+        self.btn_toggle_debug.setToolTip("Show/hide pixel inspector (for advanced tuning)")
+        self.btn_toggle_debug.toggled.connect(self._toggle_debug_panel)
+        bottom_layout.addWidget(self.btn_toggle_debug)
+
+        self.inspector_widget = QWidget()
+        _insp_layout = QHBoxLayout(self.inspector_widget)
+        _insp_layout.setContentsMargins(0, 0, 0, 0)
+        _insp_layout.setSpacing(8)
+        self.inspector_pixel_label = QLabel("Pixels: N/A")
+        self.inspector_contour_label = QLabel("Area: N/A")
+        self.inspector_fill_label = QLabel("Fill: N/A")
+        _insp_layout.addWidget(self.inspector_pixel_label)
+        _insp_layout.addWidget(self.inspector_contour_label)
+        _insp_layout.addWidget(self.inspector_fill_label)
+        self.inspector_widget.setVisible(False)
+        bottom_layout.addWidget(self.inspector_widget)
 
         self.main_layout.addWidget(self.bottom_panel_widget)
         self.btn_refresh_ans_keys.clicked.connect(self.populate_answer_key_combobox)
@@ -433,6 +546,22 @@ class CheckerWindow(QWidget):
         self.scan_mode_group.buttonClicked.connect(self.rescan_with_new_parameters)
 
         self.populate_answer_key_combobox()
+
+        # Keyboard shortcuts
+        QShortcut(QKeySequence("F5"), self).activated.connect(
+            lambda: self._start_scan_process() if self.btn_start_scan.isVisible() and self.btn_start_scan.isEnabled() else None
+        )
+        QShortcut(QKeySequence("F6"), self).activated.connect(
+            lambda: self._process_next_image() if self.btn_next_image.isVisible() and self.btn_next_image.isEnabled() else None
+        )
+        QShortcut(QKeySequence("F7"), self).activated.connect(
+            lambda: self._skip_current_image() if self.btn_skip_image.isVisible() and self.btn_skip_image.isEnabled() else None
+        )
+        QShortcut(QKeySequence("Escape"), self).activated.connect(
+            lambda: self._stop_scan_process() if self.btn_stop_scan.isVisible() else None
+        )
+
+        self._show_canvas_placeholder()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -451,7 +580,39 @@ class CheckerWindow(QWidget):
 
         self.log(f"main_v_splitter sizes on show: {self.main_v_splitter.sizes()}")
         self.log(f"content_splitter sizes on show: {self.content_splitter.sizes()}")
+        if not self.image_paths:
+            self._show_canvas_placeholder()
 
+    def _show_canvas_placeholder(self):
+        self.scene.clear()
+        self.scene.setSceneRect(0, 0, 800, 560)
+        text_item = self.scene.addText("Click 'Add Images' or 'Hardware Scan' to begin")
+        text_item.setDefaultTextColor(QColor(160, 160, 160))
+        font = text_item.font()
+        font.setPointSize(13)
+        text_item.setFont(font)
+        br = text_item.boundingRect()
+        text_item.setPos((800 - br.width()) / 2, (560 - br.height()) / 2)
+        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def _toggle_debug_panel(self, checked):
+        self.inspector_widget.setVisible(checked)
+        self.btn_toggle_debug.setText("Debug ▼" if checked else "Debug ▶")
+
+    def _record_scan_async(self, count=1):
+        """Fire-and-forget: report scanned sheets to the license server in background."""
+        license_data = load_license_key()
+        if not license_data or license_data.get("license_type") != "COUNT_BASED":
+            return  # Only COUNT_BASED licenses need reporting
+        import threading
+        def _do_record():
+            success, message, remaining = record_omr_scans(count)
+            if success:
+                if remaining >= 0:
+                    self.show_toast(f"Scan recorded. Credits remaining: {remaining}", level='info')
+            else:
+                self.show_toast(f"License record failed (offline?): {message}", level='warning')
+        threading.Thread(target=_do_record, daemon=True).start()
 
     def populate_answer_key_combobox(self):
         self.ans_key_combobox.blockSignals(True)
@@ -518,16 +679,18 @@ class CheckerWindow(QWidget):
         if not self.answer_key_data:
             self.show_toast("Could not load any valid answer keys.", 'warning')
             self.populate_answer_key_combobox() # Reset combobox
+            self.btn_review_keys.setEnabled(False)
             return
 
         self.log(f"Loaded {len(self.answer_key_data)} answer key(s).")
+        self.btn_review_keys.setEnabled(True)
         self.template_data = self.answer_key_data[0]['template']
         if self.answer_key_data[0].get('image_settings'):
             self._set_params_on_ui(self.answer_key_data[0]['image_settings'])
             self.log(f"Image settings loaded from: {os.path.basename(self.answer_key_data[0]['path'])}")
         
         self._create_right_panel_widgets()
-        self._populate_identifier_checkboxes()
+        self._populate_identifier_overrides()
         self._update_output_pattern_display() # This now handles both Excel and Rename pattern display
 
         # Update combobox and status label
@@ -602,7 +765,7 @@ class CheckerWindow(QWidget):
             self.template_data = None
             self.populate_answer_key_combobox()
             self._create_right_panel_widgets()
-            self._populate_identifier_checkboxes()
+            self._populate_identifier_overrides()
             self.ans_key_status_label.setText("No key loaded.")
             self.log("Cleared all loaded answer keys.")
 
@@ -635,36 +798,48 @@ class CheckerWindow(QWidget):
             os.makedirs(app_data_path)
         cache_file = os.path.join(app_data_path, "student_data_cache.xlsx")
 
-        # 1. Try to load from cache
-        if os.path.exists(cache_file):
-            try:
-                self.student_data = pd.read_excel(cache_file)
-                self.log("Student data loaded from cache.")
-                return
-            except Exception as e:
-                self.log(f"Could not load student data from cache: {e}. Rebuilding cache.")
-
-        # 2. If cache fails or doesn't exist, load from original source
         settings = QSettings("OptiMark Pro", "Defaults")
-        path = settings.value("student_data_sheet", "")
-        if path and os.path.exists(path):
+        original_excel_path = settings.value("student_data_sheet", "")
+
+        self.student_data = None # Initialize to None
+
+        if original_excel_path and os.path.exists(original_excel_path):
             try:
-                self.student_data = pd.read_excel(path)
-                self.log(f"Student data loaded from {os.path.basename(path)}.")
-                # 3. Save to cache for future use
-                shutil.copy(path, cache_file)
-                self.log("Student data cached successfully.")
+                # Always load from the original source if it exists and is valid
+                self.student_data = pd.read_excel(original_excel_path)
+                self.log(f"Student data loaded from original source: {os.path.basename(original_excel_path)}.")
+                
+                # Always update the cache with the latest data from the original source
+                # This ensures the cache is fresh and ready for subsequent quick loads
+                shutil.copy(original_excel_path, cache_file)
+                self.log("Student data cache updated successfully.")
+
             except Exception as e:
-                self.student_data = None
-                self.log(f"Error loading student data from {path}: {e}")
-                QMessageBox.critical(self, "Student Data Load Error", f"Failed to load student data from '{path}'.\nError: {e}")
+                self.log(f"Error loading student data from original source '{original_excel_path}': {str(e)}")
+                QMessageBox.critical(self, "Student Data Load Error", f"Failed to load student data from '{original_excel_path}'.\nError: {str(e)}")
+                
+                # If original source fails, try to fall back to cache if it exists and is valid
+                if os.path.exists(cache_file):
+                    try:
+                        self.student_data = pd.read_excel(cache_file)
+                        self.log("Student data successfully loaded from (fallback) cache.")
+                    except Exception as cache_e:
+                        self.log(f"Error loading student data from fallback cache: {cache_e}. No student data loaded.")
         else:
-            self.student_data = None
+            self.log("No original student data sheet configured or file not found. Checking cache...")
+            if os.path.exists(cache_file):
+                try:
+                    self.student_data = pd.read_excel(cache_file)
+                    self.log("Student data loaded from cache (no original source configured).")
+                except Exception as e:
+                    self.log(f"Error loading student data from cache: {e}. No student data loaded.")
+            else:
+                self.log("No student data available (neither original source nor cache).")
         
     def apply_theme(self):
         apply_stylesheet_and_floatation(self)
 
-    def show_toast(self, message, level='info', duration=2500):
+    def show_toast(self, message, level='info', duration=1500):
         Toast(self, message, level, duration).show()
 
     def _clear_layout(self, layout):
@@ -689,8 +864,8 @@ class CheckerWindow(QWidget):
         if not pattern_name:
             self.output_pattern_label.setText("Active Pattern: <None>")
             self.active_output_pattern = None
-            if hasattr(self, 'new_excel_filename_edit'):
-                self.new_excel_filename_edit.setPlaceholderText("e.g., my_results.xlsx")
+            if hasattr(self, 'new_excel_filename_edit'): # Check if this attribute exists
+                self.new_excel_filename_edit.setPlaceholderText("e.g., my_results.csv")
                 self.new_excel_filename_edit.setReadOnly(False)
             return
 
@@ -701,35 +876,42 @@ class CheckerWindow(QWidget):
             return
 
         output_settings.beginGroup(pattern_name)
-        excel_filename_components = output_settings.value("excel_filename_components", [], type=list)
+        csv_filename_components = output_settings.value("csv_filename_components", [], type=list)
         rename_components = output_settings.value("rename_components", [], type=list)
         selected_columns = output_settings.value("selected_columns", [], type=list)
         lookup_roi = output_settings.value("lookup_roi", "")
         lookup_column = output_settings.value("lookup_column", "")
         output_settings.endGroup()
 
-        if not excel_filename_components or not selected_columns:
-            self.output_pattern_label.setText(f"Pattern '{pattern_name}': [INVALID - Excel config missing]")
+        if not csv_filename_components or not selected_columns:
+            self.output_pattern_label.setText(f"Pattern '{pattern_name}': [INVALID - CSV config missing]")
             self.active_output_pattern = None
             return
 
         # Update label and check validity of rename components
         self.output_pattern_label.setText(f"Active Pattern: {pattern_name}")
         if rename_components:
-            template_rois = [roi['name'] for roi in self.template_data.get('rois', [])] if self.template_data else []
-            invalid_rois = [c for c in rename_components if c not in template_rois and c not in ['year', 'date']]
+            template_rois_lower = [roi['name'].lower() for roi in self.template_data.get('rois', [])] if self.template_data else []
+            allowed_special_lower = ['year', 'date', 'yyyy', 'yy', 'mm', 'mmm', 'dd', 'hh', 'ss']
+            invalid_rois = []
+            for c in rename_components:
+                if c.startswith("Data: "): continue
+                if c.startswith('"') and c.endswith('"'): continue
+                if c.lower() in allowed_special_lower: continue
+                if c.lower() in template_rois_lower: continue
+                invalid_rois.append(c)
+            
             if invalid_rois:
                 self.output_pattern_label.setText(f"Active Pattern: {pattern_name}\n[Rename part INVALID: Missing {', '.join(invalid_rois)}]")
 
         self.active_output_pattern = {
-            'name': pattern_name, 
-            'excel_filename_components': excel_filename_components, 
+            'name': pattern_name,
+            'csv_filename_components': csv_filename_components,
             'rename_components': rename_components,
             'selected_columns': selected_columns,
             'lookup_roi': lookup_roi,
             'lookup_column': lookup_column
-        }
-        
+        }        
         if hasattr(self, 'new_excel_filename_edit') and not self.checkbox_append_excel.isChecked():
             self.new_excel_filename_edit.setPlaceholderText(f"Using '{pattern_name}' pattern")
             self.new_excel_filename_edit.setReadOnly(True)
@@ -739,9 +921,14 @@ class CheckerWindow(QWidget):
         source_selection_frame = QFrame(); source_selection_frame.setFrameShape(QFrame.Shape.StyledPanel)
         source_selection_layout = QVBoxLayout(source_selection_frame)
         
+        source_btns_row = QHBoxLayout()
         self.btn_add_images = QPushButton("Add Images")
         self.btn_add_images.clicked.connect(self._show_image_selection_dialog)
-        source_selection_layout.addWidget(self.btn_add_images)
+        source_btns_row.addWidget(self.btn_add_images)
+        self.btn_hardware_scan = QPushButton("Hardware Scan")
+        self.btn_hardware_scan.clicked.connect(self._hardware_scan)
+        source_btns_row.addWidget(self.btn_hardware_scan)
+        source_selection_layout.addLayout(source_btns_row)
 
         ans_key_selection_layout = QHBoxLayout()
         self.ans_key_label = QLabel("Answer Key:")
@@ -768,7 +955,7 @@ class CheckerWindow(QWidget):
         output_options_group = QGroupBox("Output File")
         output_options_layout = QVBoxLayout(output_options_group)
 
-        self.checkbox_append_excel = QCheckBox("Save to specific static Excel file")
+        self.checkbox_append_excel = QCheckBox("Save to specific static CSV file")
         output_options_layout.addWidget(self.checkbox_append_excel)
 
         # Container for the file path widgets, to be shown/hidden
@@ -776,18 +963,18 @@ class CheckerWindow(QWidget):
         append_layout = QHBoxLayout(self.append_widgets_container)
         append_layout.setContentsMargins(0,0,0,0)
         append_layout.addWidget(QLabel("File Path:"))
-        self.output_excel_path_edit = QLineEdit()
-        self.output_excel_path_edit.setReadOnly(True)
-        append_layout.addWidget(self.output_excel_path_edit)
-        self.btn_select_output_excel = QPushButton("Browse...")
-        append_layout.addWidget(self.btn_select_output_excel)
+        self.output_csv_path_edit = QLineEdit()
+        self.output_csv_path_edit.setReadOnly(True)
+        append_layout.addWidget(self.output_csv_path_edit)
+        self.btn_select_output_csv = QPushButton("Browse...")
+        append_layout.addWidget(self.btn_select_output_csv)
         output_options_layout.addWidget(self.append_widgets_container)
 
         self.output_pattern_label = QLabel("Active Pattern: <None>")
         self.output_pattern_label.setWordWrap(True)
         output_options_layout.addWidget(self.output_pattern_label)
 
-        self.btn_select_output_excel.clicked.connect(self._select_output_excel_file)
+        self.btn_select_output_csv.clicked.connect(self._select_output_csv_file)
         self.checkbox_append_excel.toggled.connect(self._update_output_options_state)
 
         scan_options_frame = QFrame(); scan_options_frame.setFrameShape(QFrame.Shape.StyledPanel)
@@ -829,16 +1016,22 @@ class CheckerWindow(QWidget):
                 
         scan_options_layout.addLayout(scan_mode_combined_layout)
         control_buttons_frame = QFrame(); control_buttons_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        self.control_buttons_layout = QVBoxLayout(control_buttons_frame)
-        self.btn_start_scan = QPushButton("Start Scan"); self.btn_start_scan.clicked.connect(self._start_scan_process)
-        self.btn_skip_image = QPushButton("Skip Image"); self.btn_skip_image.clicked.connect(self._skip_current_image)
-        self.btn_next_image = QPushButton("Next Image"); self.btn_next_image.clicked.connect(self._process_next_image)
+        self.control_buttons_layout = QGridLayout(control_buttons_frame)
+        self.control_buttons_layout.setSpacing(4)
+        self.btn_start_scan = QPushButton("Start Scan (F5)"); self.btn_start_scan.clicked.connect(self._start_scan_process)
+        self.btn_skip_image = QPushButton("Skip (F7)"); self.btn_skip_image.clicked.connect(self._skip_current_image)
+        self.btn_next_image = QPushButton("Next (F6)"); self.btn_next_image.clicked.connect(self._process_next_image)
         self.btn_rewrap_image = QPushButton("Re-Wrap"); self.btn_rewrap_image.clicked.connect(self._rewrap_image)
         self.btn_accept_manual_ids = QPushButton("Accept & Continue"); self.btn_accept_manual_ids.clicked.connect(self._accept_manual_ids_and_continue)
-        self.btn_stop_scan = QPushButton("Stop"); self.btn_stop_scan.setObjectName("btn_stop_scan"); self.btn_stop_scan.clicked.connect(self._stop_scan_process)
+        self.btn_stop_scan = QPushButton("Stop (Esc)"); self.btn_stop_scan.setObjectName("btn_stop_scan"); self.btn_stop_scan.clicked.connect(self._stop_scan_process)
+        self.control_buttons_layout.addWidget(self.btn_start_scan, 0, 0, 1, 2)
+        self.control_buttons_layout.addWidget(self.btn_next_image, 1, 0)
+        self.control_buttons_layout.addWidget(self.btn_skip_image, 1, 1)
+        self.control_buttons_layout.addWidget(self.btn_accept_manual_ids, 2, 0)
+        self.control_buttons_layout.addWidget(self.btn_rewrap_image, 2, 1)
+        self.control_buttons_layout.addWidget(self.btn_stop_scan, 3, 0, 1, 2)
         for btn in [self.btn_start_scan, self.btn_skip_image, self.btn_next_image, self.btn_rewrap_image, self.btn_accept_manual_ids, self.btn_stop_scan]:
-            self.control_buttons_layout.addWidget(btn)
-            btn.setVisible(False) 
+            btn.setVisible(False)
 
         self.btn_start_scan.setVisible(True)
 
@@ -853,13 +1046,25 @@ class CheckerWindow(QWidget):
         self.top_panel_layout.setStretch(3, 20)
 
     def _init_left_panel(self):
-        self.identifier_group_box = QGroupBox("Identifiers to Match")
-        self.identifier_group_box.setMinimumHeight(130)
-        self.identifier_layout = QGridLayout()
-        self.identifier_group_box.setLayout(self.identifier_layout)
-        self.identifier_checkboxes = []
-        self.identifier_layout.setContentsMargins(0,0,0,0)
-        self.left_panel_layout.addWidget(self.identifier_group_box)
+        self.override_group_box = QGroupBox("Override Identifier Values")
+        self.override_group_box.setFixedHeight(140)
+        
+        group_box_layout = QVBoxLayout(self.override_group_box)
+        group_box_layout.setContentsMargins(2, 10, 2, 2)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setObjectName("override_scroll_area")
+        
+        self.override_widget_container = QWidget()
+        self.override_layout = QFormLayout(self.override_widget_container)
+        self.override_layout.setContentsMargins(5, 5, 5, 5)
+        self.override_layout.setSpacing(5)
+        
+        scroll_area.setWidget(self.override_widget_container)
+        group_box_layout.addWidget(scroll_area)
+        
+        self.left_panel_layout.addWidget(self.override_group_box)
         
         log_group = QGroupBox("Log")
         log_group.setObjectName("log_group_box")
@@ -875,7 +1080,7 @@ class CheckerWindow(QWidget):
 
     def _init_right_panel(self):
         self.show_wrapped_image_checkbox = QCheckBox("Show Wrapped Image (with settings)")
-        self.show_wrapped_image_checkbox.setChecked(True)
+        self.show_wrapped_image_checkbox.setChecked(False)
         self.show_wrapped_image_checkbox.stateChanged.connect(self._toggle_wrapped_image_display)
         self.right_panel_layout.addWidget(self.show_wrapped_image_checkbox)
         self.right_panel_layout.addWidget(self.answers_scroll_area)
@@ -954,7 +1159,7 @@ class CheckerWindow(QWidget):
         try:
             with open(path, 'r') as f: self.template_data = json.load(f)
             self._create_right_panel_widgets()
-            self._populate_identifier_checkboxes()
+            self._populate_identifier_overrides()
         except Exception as e: QMessageBox.critical(self, "Error", f"Failed to load or parse template: {e}")
 
     def run_auto_corner_detection(self):
@@ -977,7 +1182,7 @@ class CheckerWindow(QWidget):
             return False
 
     def _rewrap_image(self):
-        self.log("Re-wrapping image. Entering manual corner selection mode.")
+        self.log("Re-wrapping image. Entering manual content area selection mode.")
         self.enter_manual_corner_mode()
     
     def enter_manual_corner_mode(self):
@@ -986,7 +1191,7 @@ class CheckerWindow(QWidget):
             if handle.scene(): self.scene.removeItem(handle)
         self.corner_handles.clear()
         if self.current_image is not None: self.display_image(self.current_image)
-        self.show_toast("Click the 4 corners of the OMR sheet.", level='info')
+        self.show_toast("Click the 4 corners of the main content area (e.g., the box surrounding all bubbles).", level='info')
 
     def add_manual_corner(self, point):
         if not self.is_manual_corner_mode or len(self.corner_handles) >= 4: return
@@ -1019,19 +1224,44 @@ class CheckerWindow(QWidget):
             return False
         
         try:
-            page_corners = corners if corners is not None else np.array([(h.pos().x(), h.pos().y()) for h in self.corner_handles], dtype="float32")
-            template_corners = np.array(self.template_data.get('template_corners'), dtype="float32")
             box_points_relative = self.template_data.get('box_points_relative', [])
             if len(box_points_relative) != 4: raise ValueError("Template is missing 'box_points_relative'. Cannot warp content box.")
-            tl_corner_template = template_corners[0]
-            template_box_points_abs = np.array([[p['x'] + tl_corner_template[0], p['y'] + tl_corner_template[1]] for p in box_points_relative], dtype="float32")
-            H, _ = cv2.findHomography(template_corners, page_corners)
-            if H is None: raise ValueError("Could not compute homography from page corners.")
-            self.homography_matrix = H
-            new_box_points = cv2.perspectiveTransform(template_box_points_abs.reshape(-1, 1, 2), H)
-            warped_image, warp_matrix = self.engine.four_point_transform(self.current_image, new_box_points.reshape(4, 2))
+            
+            # If corners are from auto-detection, they are the PAGE corners.
+            if corners is not None and corners.any():
+                self.log("DEBUG: Using auto-detected page corners to calculate warp.")
+                page_corners = corners
+                template_corners = np.array(self.template_data.get('template_corners'), dtype="float32")
+                tl_corner_template = template_corners[0]
+                template_box_points_abs = np.array([[p['x'] + tl_corner_template[0], p['y'] + tl_corner_template[1]] for p in box_points_relative], dtype="float32")
+                
+                H, _ = cv2.findHomography(template_corners, page_corners)
+                if H is None: raise ValueError("Could not compute homography from page corners.")
+                self.homography_matrix = H
+                
+                # Project the content box from the template onto the page
+                new_box_points = cv2.perspectiveTransform(template_box_points_abs.reshape(-1, 1, 2), H)
+                if new_box_points is None: raise ValueError("Could not project content box onto the page.")
+                new_box_points = new_box_points.reshape(4, 2)
+
+            # Else, the user has manually selected the CONTENT BOX corners.
+            else:
+                self.log("DEBUG: Using manually selected content box corners to calculate warp.")
+                new_box_points = np.array([(h.pos().x(), h.pos().y()) for h in self.corner_handles], dtype="float32")
+                # Set homography to None to signal that we are in a direct-to-box manual mode.
+                self.homography_matrix = None
+
+            warped_image, warp_matrix = self.engine.four_point_transform(self.current_image, new_box_points)
             if warped_image is None: raise ValueError("Failed to warp the content box.")
+            
             self.warped_image, self.warp_matrix = warped_image, warp_matrix
+            self.scan_results = None # Ensure a fresh scan
+
+            # If this was a manual re-wrap (signaled by no homography), we must reset the 
+            # scene geometry to the new warped image before drawing ROIs on it.
+            if self.homography_matrix is None:
+                self.display_image(self.warped_image)
+
             self.rescan_with_new_parameters()
             return True
         except Exception as e: 
@@ -1081,10 +1311,18 @@ class CheckerWindow(QWidget):
             display_image = preview_image if self.show_wrapped_image_checkbox.isChecked() else self.warped_image
             h, w, ch = display_image.shape
             qt_image = QImage(cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB).data, w, h, ch * w, QImage.Format.Format_RGB888)
-            if self.image_pixmap_item and self.image_pixmap_item.scene(): self.image_pixmap_item.setPixmap(QPixmap.fromImage(qt_image))
-            else: self.image_pixmap_item = self.scene.addPixmap(QPixmap.fromImage(qt_image))
+            if self.image_pixmap_item and self.image_pixmap_item.scene():
+                self.image_pixmap_item.setPixmap(QPixmap.fromImage(qt_image))
+            else:
+                self.image_pixmap_item = self.scene.addPixmap(QPixmap.fromImage(qt_image))
+            self.image_pixmap_item.setZValue(0) # Ensure image is at the bottom
             self._draw_template_on_scene(preview_image, draw_rois=True)
-            self._scan_scene_grid(preview_image, params, scan_type='identifiers', clear_existing_bubbles=True)
+            # If this is the first scan, we need to scan for identifiers first
+            if self.scan_results is None:
+                self._scan_scene_grid(preview_image, params, scan_type='identifiers')
+
+            # Identifiers are NOT re-scanned, to preserve manual edits.
+            # We use the existing values in self.scan_results['identifiers']
             matching_key = self._find_matching_answer_key()
             if matching_key:
                 self.correct_answers_map = matching_key['answers']
@@ -1095,11 +1333,11 @@ class CheckerWindow(QWidget):
                 self.correct_answers_map = {}
                 self.current_matched_key_path = "Not Found"
 
-            self._scan_scene_grid(preview_image, params, scan_type='answers', clear_existing_bubbles=False)
+            self._scan_scene_grid(preview_image, params, scan_type='answers', clear_existing_bubbles=True)
             self._update_widgets_from_scan()
         except Exception as e: 
-            self.log(f"Re-Scan Error: {e}")
-            QMessageBox.critical(self, "Re-Scan Error", f"An error occurred during re-scan:\n{e}")
+            self.log(f"Re-Scan Error: {str(e)}")
+            QMessageBox.critical(self, "Re-Scan Error", f"An error occurred during re-scan:\n{str(e)}")
     
     def get_current_params(self):
         multi_ans_strategy = "wrong"
@@ -1115,17 +1353,124 @@ class CheckerWindow(QWidget):
 
     def _draw_template_on_scene(self, image_to_draw_on, draw_rois=True):
         if not draw_rois or not self.template_data or image_to_draw_on is None: return
-        if self.homography_matrix is None or self.warp_matrix is None: return
-        combined_matrix = self.warp_matrix @ self.homography_matrix
-        for i, roi_data in enumerate(self._get_target_rois()):
-            roi_corners = np.array([[roi_data['x'], roi_data['y']], [roi_data['x'] + roi_data['width'], roi_data['y']], [roi_data['x'] + roi_data['width'], roi_data['y'] + roi_data['height']], [roi_data['x'], roi_data['y'] + roi_data['height']]], dtype=np.float32)
-            final_roi_in_warp = cv2.perspectiveTransform(roi_corners.reshape(-1, 1, 2), combined_matrix)
-            x, y, w, h = cv2.boundingRect(final_roi_in_warp)
-            rect = QRectF(x, y, w, h)
-            rect_item = self.scene.addRect(rect, QPen(QColor("cyan"), 2))
-            text_item = self.scene.addText(roi_data['name']); text_item.setPos(rect.topLeft() - QPointF(0, 10)); text_item.setDefaultTextColor(QColor("cyan"))
-            grid_lines = self._draw_roi_grid(roi_data, rect)
-            self.roi_items.append([rect_item, text_item] + grid_lines)
+
+        target_rois = self._get_target_rois()
+
+        # Manual Mode: The warped image is the content box. ROIs are drawn relative to its top-left, but scaled to fit.
+        if self.homography_matrix is None:
+            self.log("DEBUG: Drawing ROIs in manual (direct-to-content-box) mode.")
+            try:
+                # 1. Get dimensions of the destination warped image
+                h_warped, w_warped = image_to_draw_on.shape[:2]
+                if w_warped == 0 or h_warped == 0:
+                    self.log("ERROR: Warped image has zero dimensions. Cannot draw ROIs.")
+                    return
+
+                # 2. Get dimensions of the source content box from the template
+                box_points_relative = self.template_data.get('box_points_relative', [])
+                if not box_points_relative:
+                    self.log("ERROR: Template is missing 'box_points_relative'.")
+                    return
+                
+                # Defensively create numpy array from list of dicts or list of lists
+                template_box_pts_list = [[p['x'], p['y']] if isinstance(p, dict) else p for p in box_points_relative]
+                
+                # Re-order the points to be consistent: top-left, top-right, bottom-right, bottom-left
+                rect = np.zeros((4, 2), dtype="float32")
+                s = np.array(template_box_pts_list).sum(axis=1)
+                rect[0] = template_box_pts_list[np.argmin(s)]
+                rect[2] = template_box_pts_list[np.argmax(s)]
+                diff = np.diff(np.array(template_box_pts_list), axis=1)
+                rect[1] = template_box_pts_list[np.argmin(diff)]
+                rect[3] = template_box_pts_list[np.argmax(diff)]
+                (tl, tr, br, bl) = rect
+
+                # Calculate perspective-aware width and height, matching the four_point_transform logic
+                widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+                widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+                template_w = max(int(widthA), int(widthB))
+
+                heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+                heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+                template_h = max(int(heightA), int(heightB))
+
+                if template_w == 0 or template_h == 0:
+                    self.log("ERROR: Template content box has zero area. Cannot calculate scale.")
+                    return
+
+                # 3. Calculate scaling factors
+                scale_x = w_warped / template_w
+                scale_y = h_warped / template_h
+                self.log(f"DEBUG: Manual warp scaling factors: x={scale_x:.2f}, y={scale_y:.2f}")
+
+                # 4. Defensively get Page and Box Origins based on user's formula
+                page_origin_x, page_origin_y = 0, 0 # Keep for defensive coding, though not used in combined_origin
+                template_corners = self.template_data.get('template_corners', [])
+                if template_corners:
+                    first_corner = template_corners[0]
+                    if isinstance(first_corner, dict):
+                        page_origin_x, page_origin_y = first_corner.get('x', 0), first_corner.get('y', 0)
+                    elif isinstance(first_corner, (list, tuple)) and len(first_corner) >= 2:
+                        page_origin_x, page_origin_y = first_corner[0], first_corner[1]
+
+                box_origin_x, box_origin_y = 0, 0
+                if box_points_relative:
+                    first_box_corner = box_points_relative[0]
+                    if isinstance(first_box_corner, dict):
+                        box_origin_x, box_origin_y = first_box_corner.get('x', 0), first_box_corner.get('y', 0)
+                    elif isinstance(first_box_corner, (list, tuple)) and len(first_box_corner) >= 2:
+                        box_origin_x, box_origin_y = first_box_corner[0], first_box_corner[1]
+                
+                # Simplified combined_origin based on assuming box_points_relative are absolute to template origin
+                combined_origin_x = page_origin_x + box_origin_x
+                combined_origin_y = page_origin_y + box_origin_y
+                self.log(f"DEBUG: Using combined origin offset: x={combined_origin_x}, y={combined_origin_y}")
+
+                for roi_data in target_rois:
+                    # 5. Calculate ROI position relative to the combined origins
+                    relative_x = roi_data['x'] - combined_origin_x
+                    relative_y = roi_data['y'] - combined_origin_y
+
+                    # 6. Apply scaling to position and size
+                    scaled_x = relative_x * scale_x
+                    scaled_y = relative_y * scale_y
+                    scaled_w = roi_data['width'] * scale_x
+                    scaled_h = roi_data['height'] * scale_y
+                    
+                    rect = QRectF(scaled_x, scaled_y, scaled_w, scaled_h)
+                    rect_item = self.scene.addRect(rect, QPen(QColor("cyan"), 2))
+                    rect_item.setZValue(1)
+                    text_item = self.scene.addText(roi_data['name']); text_item.setPos(rect.topLeft() - QPointF(0, 10)); text_item.setDefaultTextColor(QColor("cyan"))
+                    text_item.setZValue(1)
+                    grid_lines = self._draw_roi_grid(roi_data, rect)
+                    self.roi_items.append([rect_item, text_item] + grid_lines)
+
+            except (KeyError, IndexError, cv2.error) as e:
+                self.log(f"ERROR: Could not draw ROIs in manual mode. Error: {e}")
+                return
+        
+        # Auto Mode: Use the combined matrix to project ROIs from template space to warped image space.
+        else:
+            if self.warp_matrix is None: 
+                self.log("DEBUG: Skipping ROI drawing in auto mode, warp_matrix is missing.")
+                return
+            
+            self.log("DEBUG: Drawing ROIs in automatic (homography) mode.")
+            combined_matrix = self.warp_matrix @ self.homography_matrix
+            for i, roi_data in enumerate(target_rois):
+                roi_corners = np.array([[roi_data['x'], roi_data['y']], [roi_data['x'] + roi_data['width'], roi_data['y']], [roi_data['x'] + roi_data['width'], roi_data['y'] + roi_data['height']], [roi_data['x'], roi_data['y'] + roi_data['height']]], dtype=np.float32)
+                final_roi_in_warp = cv2.perspectiveTransform(roi_corners.reshape(-1, 1, 2), combined_matrix)
+                if final_roi_in_warp is None:
+                    self.log(f"Warning: Could not transform ROI '{roi_data.get('name')}' for drawing.")
+                    continue
+                x, y, w, h = cv2.boundingRect(final_roi_in_warp)
+                rect = QRectF(x, y, w, h)
+                rect_item = self.scene.addRect(rect, QPen(QColor("cyan"), 2))
+                rect_item.setZValue(1) # ROIs below bubbles
+                text_item = self.scene.addText(roi_data['name']); text_item.setPos(rect.topLeft() - QPointF(0, 10)); text_item.setDefaultTextColor(QColor("cyan"))
+                text_item.setZValue(1) # ROIs below bubbles
+                grid_lines = self._draw_roi_grid(roi_data, rect)
+                self.roi_items.append([rect_item, text_item] + grid_lines)
 
     def _draw_roi_grid(self, roi_data, rect):
         grid_lines, grid_pen = [], QPen(QColor("blue"), 1, Qt.PenStyle.DotLine)
@@ -1158,6 +1503,28 @@ class CheckerWindow(QWidget):
             if rect.width() <= 0 or rect.height() <= 0: continue
             roi_image = image_to_scan[int(rect.y()):int(rect.y()+rect.height()), int(rect.x()):int(rect.x()+rect.width())]
             roi_name = roi_data.get('name', f'roi_{i}')
+
+            # --- NEW: Handle Identifier Overrides ---
+            if roi_data.get('type') == 'Identifier' and roi_name in self.identifier_override_widgets:
+                override_widget = self.identifier_override_widgets[roi_name]
+                override_value = ""
+                if isinstance(override_widget, QLineEdit):
+                    override_value = override_widget.text().strip()
+                elif isinstance(override_widget, QComboBox):
+                    override_value = override_widget.currentText().strip()
+
+                if override_value:
+                    # If there's an override value, use it and skip scanning this ROI
+                    self.scan_results['identifiers'][roi_name] = override_value
+                    self.log(f"Used override value '{override_value}' for identifier '{roi_name}'.")
+                    # Clear any bubbles that might have been drawn from a previous non-override scan
+                    for item in self.bubble_items.get('identifier', []):
+                        if item.scene():
+                            self.scene.removeItem(item)
+                    self.bubble_items['identifier'].clear()
+                    continue
+            # --- END NEW ---
+
             if roi_data.get('type') == 'qrcode': self.scan_results['identifiers'][roi_name] = self.engine.read_qr(roi_image); continue
             try:
                 rows, cols = (int(roi_data.get(k,0)) for k in (['rows', 'cols'] if 'rows' in roi_data else ['questions', 'options']))
@@ -1169,20 +1536,52 @@ class CheckerWindow(QWidget):
             
             if roi_data['type'] == 'Answer':
                 start_q, options_map = roi_data.get('start_question', 1), roi_data.get('values', [chr(ord('A') + i) for i in range(cols)])
+                strategy = params.get('multi_ans_strategy', 'wrong')
+
                 for r_idx in range(rows):
                     q_num_str = str(start_q + r_idx)
-                    detected_options, correct_options = [], self.correct_answers_map.get(q_num_str, [])
-                    for c_idx, is_filled in enumerate(matrix[r_idx]):
-                        if not is_filled: continue
-                        option_char = options_map[c_idx]
+                    detected_options = []
+                    correct_options = self.correct_answers_map.get(q_num_str, [])
+                    
+                    row_metrics = metric_matrix[r_idx]
+                    filled_indices = [c for c, m in enumerate(row_metrics) if m > params.get('threshold', 0.3)]
+
+                    # --- Strategy Implementation ---
+                    final_indices = filled_indices
+                    if strategy == "larger_area" and len(filled_indices) > 1:
+                        # Pick only the one with the maximum metric
+                        max_idx = filled_indices[0]
+                        max_val = row_metrics[max_idx]
+                        for idx in filled_indices[1:]:
+                            if row_metrics[idx] > max_val:
+                                max_val = row_metrics[idx]
+                                max_idx = idx
+                        final_indices = [max_idx]
+                        self.log(f"DEBUG: Q{q_num_str} | Larger Area strategy picked bubble {options_map[max_idx]} ({max_val:.2f})")
+
+                    for c_idx in final_indices:
+                        if c_idx >= len(options_map):
+                            option_char = "?"
+                        else:
+                            option_char = options_map[c_idx]
                         detected_options.append(option_char)
+                        
                         if (coord_index := r_idx * cols + c_idx) < len(all_coords):
                             bubble = all_coords[coord_index]
                             bubble_coords = (bubble[0] + rect.x(), bubble[1] + rect.y(), bubble[2] + rect.x(), bubble[3] + rect.y())
-                            all_filled_bubbles_info.append({'coords': bubble_coords, 'status': 'correct' if option_char in correct_options else 'incorrect', 'roi_type': 'Answer'})
+                            all_filled_bubbles_info.append({
+                                'coords': bubble_coords, 
+                                'status': 'correct' if option_char in correct_options else 'incorrect', 
+                                'roi_type': 'Answer'
+                            })
+
                     self.scan_results['answers'][q_num_str] = detected_options
-                    if len(detected_options) > 1 and params.get('multi_ans_strategy', 'wrong') == "wrong": self.scan_results['errors'][f'Q{q_num_str}'] = "Multiple answers"
-                    if not detected_options: self.scan_results['errors'][f'Q{q_num_str}'] = "No answer detected"
+                    if len(detected_options) > 1 and strategy == "wrong":
+                        self.scan_results['errors'][f'Q{q_num_str}'] = "Multiple answers"
+                        self.log(f"WARNING: Q{q_num_str} | Multiple answers detected under 'Wrong' strategy: {detected_options}")
+                    
+                    if not detected_options:
+                        self.scan_results['errors'][f'Q{q_num_str}'] = "No answer detected"
 
             elif roi_data['type'] == 'Identifier':
                 for r_idx in range(rows):
@@ -1209,11 +1608,11 @@ class CheckerWindow(QWidget):
                         elif len(filled_indices) == 1:
                             char_val = roi_data.get('values', [])[filled_indices[0]] if filled_indices[0] < len(roi_data.get('values', [])) else "ERR"
                         else:
-                            char_val = "MULTI"
+                            char_val = "*"
                         value += char_val
                 if value: 
                     self.scan_results['identifiers'][roi_name] = value
-                    if "ERR" in value or "MULTI" in value: self.scan_results['errors'][roi_name] = f"Scan error ({value})"
+                    if "ERR" in value or "*" in value: self.scan_results['errors'][roi_name] = f"Scan error ({value})"
                     elif "_" in value: self.scan_results['warnings'][roi_name] = "Empty/Not found"
 
         # --- NEW BUBBLE MANAGEMENT LOGIC ---
@@ -1249,7 +1648,50 @@ class CheckerWindow(QWidget):
                 self.bubble_items['identifier'].append(item)
             elif roi_type == 'Answer':
                 self.bubble_items['answer'].append(item)
-            
+                      
+    def _handle_mismatch_dialog(self, match_result):
+        if self.remembered_mismatch_choice:
+            choice = self.remembered_mismatch_choice
+            self.log(f"DEBUG: Applying remembered mismatch choice: {choice}")
+        else:
+            dialog = MismatchAcceptDialog(match_result["mismatched_data"], self)
+            apply_stylesheet_and_floatation(dialog)
+            choice = dialog.exec()
+
+            if dialog.is_remember_checked():
+                # Do not remember "Manual Edit" or "Cancel"
+                if choice in [QDialogButtonBox.StandardButton.Yes, QDialogButtonBox.StandardButton.Apply]:
+                    self.remembered_mismatch_choice = choice
+                    self.log(f"DEBUG: Mismatch choice {choice} will be remembered for this session.")
+
+        if choice == QDialogButtonBox.StandardButton.Yes: # Accept Scanned
+            self.log("DEBUG: User accepted mismatched scanned data. Continuing scan.")
+            return 'PASS'
+        
+        elif choice == QDialogButtonBox.StandardButton.Apply: # Use Expected
+            self.log("DEBUG: User chose to use expected values from database.")
+            for item in match_result["mismatched_data"]:
+                roi_name = item['roi']
+                expected_value = item['expected']
+                self.log(f"DEBUG: Updating UI for '{roi_name}' with expected value '{expected_value}'.")
+                self._update_identifier_widget_value(roi_name, expected_value)
+            # The values in self.scan_results have been updated.
+            # Returning 'RESCAN' will trigger a re-validation.
+            return 'RESCAN'
+                    
+        elif choice == QDialogButtonBox.StandardButton.Edit: # Manual Edit
+            self.log("DEBUG: User chose to manually edit mismatched data. Pausing.")
+            self._pause_scan_for_manual_intervention(
+                "Primary match found, but secondary data mismatched. Please correct the values, accept, or skip.",
+                show_accept_button=True
+            )
+            return 'PAUSE'
+                                
+        else: # Cancel
+            self.log("DEBUG: Mismatch dialog cancelled. Skipping image.")
+            self._skip_current_image()
+            return 'SKIP'
+
     def _create_right_panel_widgets(self):
         while self.answers_layout.count():
             item = self.answers_layout.takeAt(0)
@@ -1345,74 +1787,207 @@ class CheckerWindow(QWidget):
         self._calculate_and_update_score()
         self._update_output_preview()
 
-    def _calculate_and_update_score(self):
-        if not self.template_data or not self.scan_results:
-            self.score_label.setText("Score: N/A; Correct: N/A; Unanswered: N/A")
-            return
-        correct_count, score, total_expected, answered = 0, 0, sum(1 for q in self.question_widgets if self.correct_answers_map.get(q)), 0
-        for q_num, detected in self.scan_results.get('answers', {}).items():
-            if detected:
-                answered += 1
-                if set(detected).issubset(set(self.correct_answers_map.get(q_num, []))): correct_count += 1; score += 1
-        unanswered = max(0, total_expected - answered)
-        self.score_label.setText(f"Score: {score}; Correct: {correct_count}; Unanswered: {unanswered}/{total_expected}")
+    def _get_current_aggregated_data(self):
+        """
+        Gathers all current data from UI widgets, performs student matching,
+        calculates scores, and returns a unified dictionary of all data.
+        This is the single source of truth for UI previews and CSV saving.
+        """
+        if not self.template_data:
+            return None, {}
 
-    def _update_output_preview(self):
-        if not self.scan_results or not self.template_data:
-            self.result_preview_label.setText("")
-            return
+        # 1. Gather current identifiers from UI widgets (ensures manual overrides are used)
+        current_ids = {
+            name: self._format_identifier(name, widget.combo_box.currentText() if isinstance(widget, IdentifierDropdownWidget) else widget.value_edit.text())
+            for name, widget in self.identifier_widgets.items()
+        }
 
-        if not self.active_output_pattern:
-            self.result_preview_label.setText("No output pattern selected.")
-            return
+        # 2. Gather current answers from UI widgets (ensures manual toggles are used)
+        current_answers = {
+            q: [b.text() for b in w.option_group.buttons() if b.isChecked()]
+            for q, w in self.question_widgets.items()
+        }
 
-        current_ids = {name: (widget.combo_box.currentText() if isinstance(widget, IdentifierDropdownWidget) else widget.value_edit.text()) for name, widget in self.identifier_widgets.items()}
-        student_info = self._get_student_info(current_ids)
-        
+        # 3. Perform student info lookup
+        match_result = self._get_student_info(current_ids)
+        student_info_data = match_result.pop("student_info", {}) or {}
+        # student_info_result contains matching status, reason, etc.
+
+        # 4. Calculate score and correctness
         correct_count, score, total_expected, answered = 0, 0, 0, 0
-        current_answers = {q: [b.text() for b in w.option_group.buttons() if b.isChecked()] for q, w in self.question_widgets.items()}
         for q_num in self.question_widgets:
-            if self.correct_answers_map.get(q_num): total_expected += 1
-        for q_num, detected in current_answers.items():
+            correct_answers = self.correct_answers_map.get(q_num, [])
+            if correct_answers:
+                total_expected += 1
+            
+            detected = current_answers.get(q_num, [])
+            is_correct = False
+            points = 0.0
+
             if detected:
                 answered += 1
-                if set(detected).issubset(set(self.correct_answers_map.get(q_num, []))): correct_count += 1; score += 1
-        
+                correct_mark, wrong_mark = self._get_marking_rules(q_num)
+                # Subset rule: Any mark is correct as long as ALL marks are in the key
+                if set(detected).issubset(set(correct_answers)):
+                    is_correct = True
+                    correct_count += 1
+                    points = correct_mark
+                else:
+                    is_correct = False
+                    points = wrong_mark
+                
+                score += points
+                self.log(f"DEBUG (Scoring): Q{q_num} | Strat: {self.get_current_params().get('multi_ans_strategy')} | Student: {detected} | Key: {correct_answers} | Match: {'YES' if is_correct else 'NO'} | Points: {points}")
+            else:
+                self.log(f"DEBUG (Scoring): Q{q_num} | Strat: {self.get_current_params().get('multi_ans_strategy')} | No answer detected | Key: {correct_answers} | Points: 0.0")
+
+        # 5. Aggregate all data
         now = datetime.datetime.now()
         scan_data = {
             'Timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
-            'Image_Path': '...',
+            'Image_Path': self.image_paths[self.current_image_index] if (0 <= self.current_image_index < len(self.image_paths)) else "N/A",
             **current_ids,
-            'Score': score, 'Correct': correct_count, 'Unanswered': max(0, total_expected - answered), 'Total_Questions': total_expected
+            'Score': score,
+            'Correct': correct_count,
+            'Unanswered': max(0, total_expected - answered),
+            'Total_Questions': total_expected
         }
         
-        all_data = {**student_info, **scan_data}
+        # Combine student info, matching results (status/reason), and scan data
+        all_data = {**match_result, **student_info_data, **scan_data}
 
+        # 6. Add per-question data and correctness status
         for q_num in sorted(current_answers.keys(), key=int):
             detected_opts = current_answers.get(q_num, [])
-            is_correct = set(detected_opts).issubset(set(self.correct_answers_map.get(q_num,[]))) if detected_opts else False
+            is_correct = False
+            if detected_opts:
+                is_correct = set(detected_opts).issubset(set(self.correct_answers_map.get(q_num, [])))
+            
             all_data[f'Q{q_num}'] = ", ".join(detected_opts) if detected_opts else "Unanswered"
             all_data[f'Q{q_num}_Correct'] = 'Yes' if is_correct else 'No'
 
-        selected_columns = self.active_output_pattern.get('selected_columns', [])
+        # Special handling for advanced matching primary key
+        if self.active_matching_rule:
+            primary_roi_name = self.active_matching_rule["primary_match"]["roi_name"]
+            primary_excel_col = self.active_matching_rule["primary_match"]["excel_column"]
+            accepted_primary_value = current_ids.get(primary_roi_name)
+            if accepted_primary_value:
+                all_data[primary_roi_name] = accepted_primary_value
+                all_data[primary_excel_col] = accepted_primary_value
+
+        return all_data, current_answers
+
+    def _calculate_and_update_score(self):
+        all_data, _ = self._get_current_aggregated_data()
+        if not all_data:
+            self.score_label.setText("Score: N/A; Correct: N/A; Unanswered: N/A")
+            return
         
-        preview_parts = []
-        color_hex = self.button_theme_color.name()
-        for col_name in selected_columns:
-            if col_name == "Student Answers (per question)":
-                for q_num in sorted(current_answers.keys(), key=int):
-                    value = all_data.get(f"Q{q_num}", "")
-                    preview_parts.append(f"<font color='{color_hex}'><b>Q{q_num}</b></font>: {value}")
-            elif col_name == "Correctness Status (per question)":
-                for q_num in sorted(current_answers.keys(), key=int):
-                    value = all_data.get(f"Q{q_num}_Correct", "")
-                    preview_parts.append(f"<font color='{color_hex}'><b>Q{q_num}_Correct</b></font>: {value}")
-            elif col_name in all_data:
-                value = str(all_data.get(col_name, ''))
-                preview_parts.append(f"<font color='{color_hex}'><b>{col_name}</b></font>: {value}")
+        score = all_data.get('Score', 0)
+        correct_count = all_data.get('Correct', 0)
+        unanswered = all_data.get('Unanswered', 0)
+        total_expected = all_data.get('Total_Questions', 0)
         
-        preview_text = "; ".join(preview_parts)
-        self.result_preview_label.setText(f"Output Preview: {preview_text}")
+        self.score_label.setText(f"Score: {score}; Correct: {correct_count}; Unanswered: {unanswered}/{total_expected}")
+
+    def _get_marking_rules(self, q_num):
+        """Returns (correct_mark, wrong_mark) for a given question number from template data."""
+        try:
+            q_idx = int(q_num)
+            for roi in self.template_data.get('rois', []):
+                if roi.get('type') == 'Answer':
+                    start_q = int(roi.get('start_question', 1))
+                    num_q = int(roi.get('rows', 0))
+                    if start_q <= q_idx < start_q + num_q:
+                        c_mark = float(roi.get('correct_mark', 1.0))
+                        w_mark = float(roi.get('wrong_mark', 0.0))
+                        return c_mark, w_mark
+        except (ValueError, TypeError):
+            pass
+        return 1.0, 0.0
+
+    def _update_output_preview(self):
+        try:
+            all_data, current_answers = self._get_current_aggregated_data()
+            if not all_data:
+                self.result_preview_table.setColumnCount(0)
+                return
+
+            if not self.active_output_pattern:
+                self.result_preview_table.setColumnCount(1)
+                self.result_preview_table.setHorizontalHeaderLabels(["Status"])
+                self.result_preview_table.setItem(0, 0, QTableWidgetItem("No output pattern selected."))
+                return
+
+            selected_columns = self.active_output_pattern.get('selected_columns', [])
+            headers = []
+            values = []
+
+            for col_name in selected_columns:
+                if col_name == "Student Answers (per question)":
+                    for q_num in sorted(current_answers.keys(), key=int):
+                        headers.append(f"Q{q_num}")
+                        values.append(str(all_data.get(f"Q{q_num}", "")))
+                elif col_name == "Correctness Status (per question)":
+                    for q_num in sorted(current_answers.keys(), key=int):
+                        headers.append(f"Q{q_num}✓")
+                        values.append(str(all_data.get(f"Q{q_num}_Correct", "")))
+                elif col_name in all_data:
+                    headers.append(col_name)
+                    values.append(str(all_data.get(col_name, "")))
+
+            self.result_preview_table.setColumnCount(len(headers))
+            self.result_preview_table.setHorizontalHeaderLabels(headers)
+            for i, val in enumerate(values):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.result_preview_table.setItem(0, i, item)
+
+        except Exception as e:
+            self.log(f"ERROR: Exception in _update_output_preview: {str(e)}")
+            self.result_preview_table.setColumnCount(1)
+            self.result_preview_table.setHorizontalHeaderLabels(["Error"])
+            self.result_preview_table.setItem(0, 0, QTableWidgetItem(str(e)))
+
+    def _update_identifier_widget_value(self, roi_name, new_value):
+        """Updates the UI widget for the given ROI name with the new value."""
+        if roi_name in self.identifier_widgets:
+            widget = self.identifier_widgets[roi_name]
+            if isinstance(widget, IdentifierDropdownWidget):
+                widget.combo_box.blockSignals(True)
+                # If the new value is not in the dropdown, add it.
+                if widget.combo_box.findText(str(new_value)) == -1:
+                    widget.combo_box.addItem(str(new_value))
+                widget.combo_box.setCurrentText(str(new_value))
+                widget.combo_box.blockSignals(False)
+            elif isinstance(widget, IdentifierEditWidget):
+                widget.value_edit.blockSignals(True)
+                widget.value_edit.setText(str(new_value))
+                widget.value_edit.blockSignals(False)
+            
+            # Also update the scanned_ids in self.scan_results
+            if self.scan_results and 'identifiers' in self.scan_results:
+                self.scan_results['identifiers'][roi_name] = new_value
+            self.log(f"DEBUG: Updated UI identifier '{roi_name}' to '{new_value}'.")
+
+    def _handle_manual_correction(self, primary_roi_name, current_primary_id):
+        """Opens a dialog for manual correction of the primary ID and processes the result."""
+        dialog = ManualCorrectionDialog(current_primary_id, primary_roi_name, self)
+        apply_stylesheet_and_floatation(dialog)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_id = dialog.get_new_primary_id()
+            self.log(f"DEBUG: User manually corrected '{primary_roi_name}' to '{new_id}'.")
+            self._update_identifier_widget_value(primary_roi_name, new_id)
+            # After manual correction, we need to re-evaluate the student info
+            # This is effectively a re-scan of the identifiers, but the UI has been updated
+            # The next call to _validate_and_pause_if_needed will use this new value.
+            # We explicitly trigger a rescan to update the student_info_for_output
+            self._live_rescan_from_identifiers() # This also updates student_info_for_output indirectly
+            return 'PASS'
+        else:
+            self.log("DEBUG: Manual correction dialog cancelled, pausing scan.")
+            self._pause_scan_for_manual_intervention("Manual correction cancelled. Please correct the value, accept, or skip.", show_accept_button=True)
+            return 'PAUSE'
 
     def _live_rescan_from_identifiers(self):
         """
@@ -1444,7 +2019,12 @@ class CheckerWindow(QWidget):
         if sender and (widget := sender.parent()) and isinstance(widget, IdentifierEditWidget):
             if self.scan_results:
                  self.scan_results['identifiers'][widget.roi_name] = widget.value_edit.text()
-            widget.setStyleSheet("background-color: #d4edda;")
+                 # Clear errors/warnings for this manually updated identifier
+                 if widget.roi_name in self.scan_results.get('errors', {}):
+                     del self.scan_results['errors'][widget.roi_name]
+                 if widget.roi_name in self.scan_results.get('warnings', {}):
+                     del self.scan_results['warnings'][widget.roi_name]
+            widget.setStyleSheet("background-color: #d4edda;") # Indicate successful manual override
             self.identifier_input_timer.start() # Debounce the live rescan
 
     def _update_identifier_from_dropdown(self, text):
@@ -1452,6 +2032,11 @@ class CheckerWindow(QWidget):
         if sender and (widget := sender.parent()) and isinstance(widget, IdentifierDropdownWidget):
             if self.scan_results:
                 self.scan_results['identifiers'][widget.roi_name] = text
+                # Clear errors/warnings for this manually updated identifier
+                if widget.roi_name in self.scan_results.get('errors', {}):
+                    del self.scan_results['errors'][widget.roi_name]
+                if widget.roi_name in self.scan_results.get('warnings', {}):
+                    del self.scan_results['warnings'][widget.roi_name]
             widget.setStyleSheet("background-color: #d4edda;")
             self._live_rescan_from_identifiers()
 
@@ -1459,6 +2044,9 @@ class CheckerWindow(QWidget):
         parent = button.parent()
         if self.scan_results:
             self.scan_results['answers'][parent.q_num] = [btn.text() for btn in parent.option_group.buttons() if btn.isChecked()]
+            # Trigger immediate recalculation and UI refresh
+            self._calculate_and_update_score()
+            self._update_output_preview()
 
     def zoom_to_fit_height(self):
         if not self.image_pixmap_item:
@@ -1466,7 +2054,7 @@ class CheckerWindow(QWidget):
         view = self.view
         image_rect = self.image_pixmap_item.boundingRect()
         if image_rect.isEmpty() or view.viewport().height() == 0:
-            view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            view.fitInView(self.image_pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
             return
 
         view_aspect = view.viewport().width() / view.viewport().height()
@@ -1496,6 +2084,7 @@ class CheckerWindow(QWidget):
 
     def display_image(self, image):
         self.scene.clear()
+        self.scene.setSceneRect(QRectF()) # Explicitly reset the scene's coordinate system
         self.roi_items.clear(); self.corner_handles.clear(); self.corner_polygon = None
         if hasattr(self, 'bubble_items') and isinstance(self.bubble_items, dict):
             self.bubble_items['identifier'].clear()
@@ -1506,44 +2095,61 @@ class CheckerWindow(QWidget):
         h, w, ch = image.shape
         self.image_pixmap_item = self.scene.addPixmap(QPixmap.fromImage(QImage(cv2.cvtColor(image, cv2.COLOR_BGR2RGB).data, w, h, ch*w, QImage.Format.Format_RGB888)))
         self.zoom_to_fit_height()
+        if self.last_zoom_transform:
+            self.view.setTransform(self.last_zoom_transform)
+
+    def _sanitize_for_filename(self, text: str) -> str:
+        """Removes characters that are invalid for Windows filenames."""
+        text = str(text).strip()
+        # Replace one or more whitespace chars with a single underscore
+        text = re.sub(r'\s+', '_', text)
+        # Remove invalid filename characters
+        return re.sub(r'[\\/*?:"<>|]', '', text)
+
+    def _get_images_parent_folder_path(self) -> str:
+        """
+        Determines a default parent folder path for saving results,
+        based on the location of the first loaded image, or a fallback.
+        """
+        if self.image_paths:
+            # Get the directory of the first image
+            first_image_dir = os.path.dirname(self.image_paths[0])
+            # Get the parent of that directory
+            grandparent_dir = os.path.dirname(first_image_dir)
+            # Ensure the grandparent dir exists or is creatable
+            if grandparent_dir and os.path.isdir(grandparent_dir):
+                return grandparent_dir
+            else:
+                # Fallback if grandparent is weird or non-existent
+                self.log(f"Warning: Grandparent directory '{grandparent_dir}' not found for image path '{self.image_paths[0]}'. Falling back to results directory.")
+                return get_results_dir()
+        else:
+            self.log("No images loaded, falling back to results directory for default path.")
+            return get_results_dir()
 
     def _save_scan_result(self):
-        if not self.scan_results or not self.template_data:
+        self.log("DEBUG: Attempting to save scan result...")
+        all_data, current_answers = self._get_current_aggregated_data()
+        
+        if not all_data:
             self.show_toast("Scanned data or template is missing. Cannot save.", level='warning')
+            self.log("DEBUG: Save aborted. Aggregated data is missing.")
             return
 
-        current_ids = {name: self._format_identifier(widget.combo_box.currentText() if isinstance(widget, IdentifierDropdownWidget) else widget.value_edit.text()) for name, widget in self.identifier_widgets.items()}
-        ids = current_ids
-        student_info = self._get_student_info(ids)
+        self.log(f"DEBUG: Data aggregated for saving. Score: {all_data.get('Score')} | Strategy: {self.get_current_params().get('multi_ans_strategy', 'wrong')}")
 
-        # --- Data Aggregation for Validation ---
-        now = datetime.datetime.now()
         use_pattern = bool(self.active_output_pattern)
-        
-        correct_count, score, total_expected, answered = 0, 0, 0, 0
-        current_answers = {q: [b.text() for b in w.option_group.buttons() if b.isChecked()] for q, w in self.question_widgets.items()}
-        for q_num in self.question_widgets:
-            if self.correct_answers_map.get(q_num): total_expected += 1
-        for q_num, detected in current_answers.items():
-            if detected:
-                answered += 1
-                if set(detected).issubset(set(self.correct_answers_map.get(q_num, []))): correct_count += 1; score += 1
-
-        scan_data = {
-            'Timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
-            'Image_Path': 'placeholder', # Will be updated after potential rename
-            **ids,
-            'Score': score, 'Correct': correct_count, 'Unanswered': max(0, total_expected - answered), 'Total_Questions': total_expected
-        }
-        all_data = {**student_info, **scan_data}
+        now = datetime.datetime.now()
 
         # --- Strict Validation (User Request) ---
         if use_pattern:
+            self.log("DEBUG: Performing strict validation based on pattern.")
             selected_cols = self.active_output_pattern.get('selected_columns', [])
             required_cols_from_pattern = [
                 c for c in selected_cols 
                 if c not in ["Student Answers (per question)", "Correctness Status (per question)"]
             ]
+            self.log(f"DEBUG: Required columns from pattern: {required_cols_from_pattern}")
             
             missing_data_cols = []
             for col in required_cols_from_pattern:
@@ -1552,10 +2158,12 @@ class CheckerWindow(QWidget):
             
             if missing_data_cols:
                 error_message = f"Save aborted. Missing required data for: {', '.join(missing_data_cols)}."
-                self.log(error_message)
+                self.log(f"DEBUG: {error_message}")
                 self.show_toast(error_message, level='error', duration=5000)
                 self._update_image_status(self.image_paths[self.current_image_index], "Error")
                 return # Abort both rename and save
+            else:
+                self.log("DEBUG: Strict validation passed.")
 
         # --- Image Renaming ---
         original_path = self.image_paths[self.current_image_index]
@@ -1566,13 +2174,38 @@ class CheckerWindow(QWidget):
                 filename_parts = []
                 for component in self.active_output_pattern['rename_components']:
                     part = ""
-                    if component == 'year': part = now.strftime('%Y')
-                    elif component == 'date': part = now.strftime('%d_%b_%y')
+                    # Handle Static Text
+                    if component.startswith('"') and component.endswith('"'):
+                        part = component.strip('"')
                     elif component.startswith("Data: "):
                         col_name = component.replace("Data: ", "", 1)
-                        part = str(all_data.get(col_name, 'NA')).replace(" ", "_")
-                    else: # It's an ROI name
-                        part = ids.get(component, 'NA').replace(" ", "_")
+                        part = str(all_data.get(col_name, 'NA'))
+                    else:
+                        comp_lower = component.lower()
+                        if component == 'YYYY': part = now.strftime('%Y')
+                        elif component == 'YY': part = now.strftime('%y')
+                        elif component == 'MM': part = now.strftime('%m') # Month
+                        elif component == 'MMM': part = now.strftime('%b') # Month Abbr
+                        elif component == 'DD': part = now.strftime('%d')
+                        elif component == 'hh': part = now.strftime('%H')
+                        elif component == 'mm': part = now.strftime('%M') # Minute
+                        elif component == 'ss': part = now.strftime('%S')
+                        elif comp_lower == 'year': part = now.strftime('%Y')
+                        elif comp_lower == 'date': part = now.strftime('%d_%b_%y')
+                        elif comp_lower == 'yyyy': part = now.strftime('%Y') # Fallback for lowercase
+                        elif comp_lower == 'dd': part = now.strftime('%d') # Fallback for lowercase
+                        else: # It's an ROI name or Identifier
+                            # Case-insensitive lookup in all_data
+                            val = all_data.get(component)
+                            if val is None:
+                                for k, v in all_data.items():
+                                    if k.lower() == comp_lower:
+                                        val = v
+                                        break
+                            part = str(val if val is not None else 'NA')
+                    
+                    # Sanitize part for filename
+                    part = part.replace(" ", "_").replace("/", "-").replace("\\", "-").replace(":", "-").replace("*", "").replace("?", "").replace("\"", "").replace("<", "").replace(">", "").replace("|", "")
                     filename_parts.append(part)
 
                 new_filename_base = '_'.join(filter(None, filename_parts))
@@ -1603,14 +2236,53 @@ class CheckerWindow(QWidget):
                 self.log(f"Error during image renaming: {e}")
                 self.show_toast(f"Error creating new image name: {e}", 'error')
 
+        # --- NEW: Move out of "Error Image" folders ---
+        try:
+            current_path = image_path_to_save
+            while True:
+                parent_dir = os.path.dirname(current_path)
+                parent_dir_name = os.path.basename(parent_dir)
+
+                if parent_dir_name.lower() == "error image": # Case-insensitive check
+                    # Move up one level
+                    new_parent_dir = os.path.dirname(parent_dir)
+                    new_path = os.path.join(new_parent_dir, os.path.basename(current_path))
+                    
+                    # Handle potential name conflicts in the destination
+                    if os.path.exists(new_path):
+                        base, ext = os.path.splitext(new_path)
+                        i = 1
+                        while os.path.exists(f"{base}_{i}{ext}"):
+                            i += 1
+                        new_path = f"{base}_{i}{ext}"
+                    
+                    shutil.move(current_path, new_path)
+                    self.log(f"Moved image from '{parent_dir_name}' to parent directory: '{os.path.basename(new_path)}'")
+                    current_path = new_path
+                else:
+                    # We are in a directory not named "Error Image", so we stop.
+                    break
+            
+            image_path_to_save = current_path
+            # Update the main image path list as well, as it's used by other functions
+            self.image_paths[self.current_image_index] = image_path_to_save
+
+        except Exception as e:
+            self.log(f"Error while moving image out of 'Error Image' folder: {e}")
+            self.show_toast("Could not move image from 'Error Image' folder.", level='error')
+
         all_data['Image_Path'] = image_path_to_save
 
         # --- Path and Data Generation ---
         output_path = ""
-        if self.checkbox_append_excel.isChecked():
-            output_path = self.output_excel_path_edit.text()
+        if self.checkbox_append_excel.isChecked(): # This checkbox now implies "append to specific CSV"
+            output_path = self.output_csv_path_edit.text()
             if not output_path:
-                self.show_toast("Please select an Excel file to append to.", level='warning')
+                # If no specific file is selected, default to 'result.csv' in the images' parent folder
+                output_path = os.path.join(self._get_images_parent_folder_path(), "result.csv")
+                self.log(f"No specific output CSV selected, defaulting to: {output_path}")
+            if not output_path.lower().endswith('.csv'):
+                QMessageBox.warning(self, "Invalid File Type", "Selected file must be a CSV file (.csv).")
                 return
         else: # checkbox is unchecked, meaning use pattern
             filename = ""
@@ -1618,71 +2290,91 @@ class CheckerWindow(QWidget):
             
             if self.active_output_pattern:
                 filename_parts = []
-                for component in self.active_output_pattern['excel_filename_components']:
+                for component in self.active_output_pattern['csv_filename_components']:
                     part = ""
-                    if component == 'year': part = now.strftime('%Y')
-                    elif component == 'date': part = now.strftime('%d_%b_%y')
+                    comp_lower = component.lower()
+                    if comp_lower == 'yyyy': part = now.strftime('%Y')
+                    elif comp_lower == 'yy': part = now.strftime('%y')
+                    elif comp_lower == 'mm': part = now.strftime('%m')
+                    elif comp_lower == 'mmm': part = now.strftime('%b')
+                    elif comp_lower == 'dd': part = now.strftime('%d')
+                    elif comp_lower == 'year': part = now.strftime('%Y')
+                    elif comp_lower == 'date': part = now.strftime('%d_%b_%y')
                     elif component.startswith("Data: "):
                         col_name = component.replace("Data: ", "", 1)
                         part = str(all_data.get(col_name, 'NA')).replace(" ", "_")
-                    else: # It's an ROI name
-                        part = ids.get(component, 'NA').replace(" ", "_")
+                    else: # It's an ROI name or Identifier
+                        part = str(all_data.get(component, 'NA')).replace(" ", "_")
                     filename_parts.append(part)
-                filename = f"{'_'.join(filter(None, filename_parts))}.xlsx"
+                filename = f"{'_'.join(filter(None, filename_parts))}.csv" # Changed extension to .csv
             else: # Fallback if no pattern
-                filename = f"scan_results_{now.strftime('%d_%b_%Y')}.xlsx"
+                filename = f"scan_results_{now.strftime('%d_%b_%Y')}.csv" # Changed extension to .csv
             
-            if not filename.lower().endswith('.xlsx'): filename += '.xlsx'
+            if not filename.lower().endswith('.csv'): filename += '.csv' # Ensure .csv extension
             if not os.path.exists(output_dir):
                 try: os.makedirs(output_dir)
                 except Exception as e: QMessageBox.critical(self, "Error", f"Could not create output directory:\n{e}"); return
             output_path = os.path.join(output_dir, filename)
 
         # --- Data Structuring with Strict Column Schema ---
-        ordered_columns = []
+        cols_to_add = []
         if use_pattern:
-            # FIX #1: Build the column list strictly from the pattern, not from the available data
+            selected_cols = self.active_output_pattern.get('selected_columns', [])
             for col_name in selected_cols:
                 if col_name == "Student Answers (per question)":
-                    ordered_columns.extend([f'Q{q_num}' for q_num in sorted(current_answers.keys(), key=int)])
+                    cols_to_add.extend([f'Q{q_num}' for q_num in sorted(current_answers.keys(), key=int)])
                 elif col_name == "Correctness Status (per question)":
-                    ordered_columns.extend([f'Q{q_num}_Correct' for q_num in sorted(current_answers.keys(), key=int)])
+                    cols_to_add.extend([f'Q{q_num}_Correct' for q_num in sorted(current_answers.keys(), key=int)])
                 else:
-                    ordered_columns.append(col_name) # Always add the column name
+                    cols_to_add.append(col_name)
         else:
-            ordered_columns.extend(list(all_data.keys()))
-            ordered_columns.extend([f'Q{q_num}' for q_num in sorted(current_answers.keys(), key=int)])
-            ordered_columns.extend([f'Q{q_num}_Correct' for q_num in sorted(current_answers.keys(), key=int)])
-
-        # Add per-question data to the main data dictionary for lookup
-        for q_num in sorted(current_answers.keys(), key=int):
-            detected_opts = current_answers.get(q_num, [])
-            is_correct = set(detected_opts).issubset(set(self.correct_answers_map.get(q_num,[]))) if detected_opts else False
-            all_data[f'Q{q_num}'] = ", ".join(detected_opts) if detected_opts else "Unanswered"
-            all_data[f'Q{q_num}_Correct'] = 'Yes' if is_correct else 'No'
+            cols_to_add.extend(list(all_data.keys()))
+            # Remove internal keys that shouldn't be in CSV if not in pattern
+            cols_to_add = [c for c in cols_to_add if c not in ['status', 'reason', 'potential_matches', 'suggested_primary_id']]
+        
+        # FIX: Ensure all column names are unique to prevent reindexing errors.
+        ordered_columns = []
+        for col in cols_to_add:
+            if col not in ordered_columns:
+                ordered_columns.append(col)
 
         # Create the row by looking up each required column in the full data set.
         # all_data.get(col) will return None if a key is missing, which pandas handles correctly.
         row_data = {col: all_data.get(col) for col in ordered_columns}
         df = pd.DataFrame([row_data], columns=ordered_columns) # Explicitly set columns to guarantee order and schema
 
-        # --- Writing to Excel ---
-        try:
-            if os.path.exists(output_path):
-                with pd.ExcelFile(output_path) as xls:
-                    existing_df = pd.read_excel(xls, sheet_name='Result')
-                combined_df = pd.concat([existing_df, df], ignore_index=True)
-            else:
-                combined_df = df
+        self.log(f"Saving row data: {row_data}")
+        self.log(f"Saving to CSV directory: {os.path.dirname(output_path)}")
 
-            combined_df.to_excel(output_path, sheet_name='Result', index=False)
+        # --- Writing to CSV ---
+        try:
+            self.log(f"DEBUG: Final CSV output path: '{output_path}'") # Log final path
+            if not os.path.exists(output_path):
+                # Write header if file doesn't exist
+                df.to_csv(output_path, mode='w', header=True, index=False)
+            else:
+                # Append without header if file exists
+                df.to_csv(output_path, mode='a', header=False, index=False)
+
             self.show_toast(f"Result saved to {os.path.basename(output_path)}", level='info')
             self._update_image_status(image_path_to_save, "Done")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save scan result to Excel.\nError: {e}")
-            self.log(f"Error saving scan result to Excel: {e}")
-            self._update_image_status(original_path, "Error")
+            self._record_scan_async(count=1)
 
+            # --- Cloud Export ---
+            success, msg = self.export_manager.export_data(row_data)
+            if success:
+                self.log(f"Cloud Export Success: {msg}")
+            else:
+                self.log(f"Cloud Export Failed: {msg}")
+                self.show_toast(f"Cloud Export Failed: {msg}", level='warning')
+
+        except Exception as e:
+
+            QMessageBox.critical(self, "Error", f"Failed to save scan result to CSV.\nError: {e}")
+            self.log(f"CRITICAL: Error saving scan result to CSV: {str(e)}") # Improved critical logging
+            self.log(f"CRITICAL: Attempted to save to path: {output_path}") # Log attempted path on error
+            self._update_image_status(original_path, "Error")
+    
     def _load_output_settings(self):
         settings = QSettings("OptiMark Pro", "Defaults")
         # Load the append/create checkbox state
@@ -1692,7 +2384,7 @@ class CheckerWindow(QWidget):
         # Load the append file path
         append_path = settings.value("output_append_path", "")
         if append_path:
-            self.output_excel_path_edit.setText(append_path)
+            self.output_csv_path_edit.setText(append_path)
 
         # Update the UI to reflect the loaded state
         self._update_output_options_state()
@@ -1707,43 +2399,279 @@ class CheckerWindow(QWidget):
         settings = QSettings("OptiMark Pro", "Defaults")
         settings.setValue("output_mode_is_append", str(is_append_checked))
 
+    def _create_mapped_student_info(self, row_series):
+        """
+        Creates a student info dictionary with standardized keys by mapping potential
+        column names from the source Excel file.
+        """
+        # This map defines required keys and possible source columns (in lowercase).
+        COLUMN_MAP = {
+            'ID': ['id', 'student id'],
+            'Name': ['name', 'student name'],
+            'ProgramName': ['programname', 'programme name', 'class'],
+            'SectionName': ['sectionname', 'section'],
+            'Roll': ['roll']
+        }
+        
+        student_info_dict = {}
+        # Create a lowercase version of the source series's index (column names)
+        original_cols_lower = {str(col).lower(): col for col in row_series.index}
+
+        for required_key, possible_keys in COLUMN_MAP.items():
+            for p_key in possible_keys:
+                if p_key in original_cols_lower:
+                    actual_col_name = original_cols_lower[p_key]
+                    student_info_dict[required_key] = row_series[actual_col_name]
+                    break # Move to the next required key once found
+        
+        # Merge the standardized dictionary with the original one.
+        # This keeps all other columns from the source file, while ensuring
+        # the required keys are present and correctly named.
+        final_dict = {**row_series.to_dict(), **student_info_dict}
+        return final_dict
+
+    def _apply_dependent_mappings(self, scanned_ids):
+        if not self.active_matching_rule or "dependent_mappings" not in self.active_matching_rule:
+            return scanned_ids
+
+        modified_ids = scanned_ids.copy()
+        rules = self.active_matching_rule["dependent_mappings"]
+
+        for rule in rules:
+            if_identifier = rule["if_identifier"]
+            is_value = rule["is_value"]
+            then_identifier = rule["then_identifier"]
+            to_value = rule["to_value"]
+
+            # Check if the condition is met
+            if if_identifier in modified_ids and self._format_identifier(if_identifier, modified_ids[if_identifier]) == self._format_identifier(if_identifier, is_value):
+                # If condition met, apply the change
+                self.log(f"DEBUG (Dependency Rule): Condition met: '{if_identifier}' is '{is_value}'. Changing '{then_identifier}' to '{to_value}'.")
+                modified_ids[then_identifier] = to_value
+
+        return modified_ids
+
     def _get_student_info(self, scanned_ids):
-        student_info = {}
+        # Structured result object
+        result = {
+            "status": MATCH_NO_MATCH,
+            "student_info": None,
+            "potential_matches": [],  # List of dicts for multiple matches
+            "suggested_primary_id": None, # If SINGLE_SECONDARY_MATCH, suggestion for primary ID
+            "reason": ""
+        }
+
         if self.student_data is None or self.student_data.empty:
-            # self.log("Student data is not loaded or is empty. Cannot perform lookup.")
-            return student_info
+            self.log("Student data is not loaded or is empty. Cannot perform lookup.")
+            result["reason"] = "Student data not loaded."
+            return result
 
-        if self.active_output_pattern and self.active_output_pattern.get('lookup_roi') and self.active_output_pattern.get('lookup_column'):
-            lookup_roi = self.active_output_pattern['lookup_roi']
-            lookup_column = self.active_output_pattern['lookup_column']
+        try: # NEW: Catch exceptions within the matching logic
+            # Ensure student_data columns are formatted once for consistency in matching
+            # Create a formatted version of the student data for matching
+            formatted_student_df = self.student_data.copy()
+            for col in formatted_student_df.columns:
+                # Check if column exists before trying to format
+                if col in formatted_student_df.columns:
+                    formatted_student_df[col] = formatted_student_df[col].astype(str).apply(lambda x: self._format_identifier(col, x))
 
-            scanned_value_for_lookup = scanned_ids.get(lookup_roi)
 
-            if scanned_value_for_lookup:
-                # Ensure the column in student_data is of the same type as the scanned value for comparison
-                # This handles cases where Excel might store numbers as int/float and scanned_ids are strings
-                try:
-                    # Convert lookup column in student_data to string for robust comparison, then apply formatting
-                    self.student_data[lookup_column] = self.student_data[lookup_column].astype(str).apply(self._format_identifier)
-                    scanned_value_for_lookup = self._format_identifier(str(scanned_value_for_lookup)) # Ensure scanned value is also string and formatted
-                    matched_row = self.student_data[self.student_data[lookup_column] == scanned_value_for_lookup]
-                except KeyError:
-                    self.log(f"Lookup column '{lookup_column}' not found in student data.")
-                    return student_info
-                except Exception as e:
-                    self.log(f"Error during student data lookup type conversion: {e}")
-                    return student_info
+            # --- No Advanced Matching Rule Configured or Primary Match Fails ---
+            if not self.active_matching_rule or \
+            not self.active_matching_rule["primary_match"]["roi_name"] or \
+            not self.active_matching_rule["primary_match"]["excel_column"]:
+                self.log("DEBUG: No active advanced matching rule or primary match not fully configured. Falling back to old matching logic.")
+                
+                # Old matching logic fallback
+                if self.active_output_pattern and self.active_output_pattern.get('lookup_roi') and self.active_output_pattern.get('lookup_column'):
+                    lookup_roi = self.active_output_pattern['lookup_roi']
+                    lookup_column = self.active_output_pattern['lookup_column']
 
-                if not matched_row.empty:
-                    student_info = matched_row.iloc[0].to_dict()
-                    # self.log(f"Student info found for {lookup_roi}: {scanned_value_for_lookup}")
-                # else:
-                    # self.log(f"No student info found for {lookup_roi}: {scanned_value_for_lookup}")
-            # else:
-                # self.log(f"No scanned value available for lookup ROI: {lookup_roi}")
-        # else:
-            # self.log("No active output pattern with student data lookup configured.")
-        return student_info
+                    scanned_value_for_lookup = scanned_ids.get(lookup_roi)
+
+                    self.log(f"DEBUG (Fallback): Lookup ROI: '{lookup_roi}'")
+                    self.log(f"DEBUG (Fallback): Lookup Column (in Excel): '{lookup_column}'")
+
+                    if scanned_value_for_lookup:
+                        try:
+                            self.log(f"DEBUG (Fallback): Scanned value for '{lookup_roi}' (before format): '{scanned_value_for_lookup}'")
+                            scanned_value_for_lookup = self._format_identifier(lookup_roi, str(scanned_value_for_lookup))
+                            self.log(f"DEBUG (Fallback): Scanned value for '{lookup_roi}' (AFTER format): '{scanned_value_for_lookup}'")
+
+                            # Use the pre-formatted DataFrame for lookup
+                            if lookup_column not in formatted_student_df.columns:
+                                self.log(f"ERROR (Fallback): Lookup column '{lookup_column}' not found in student data. Please check your Excel headers.")
+                                result["reason"] = f"Lookup column '{lookup_column}' not found."
+                                return result
+
+                            matched_rows = self.student_data[formatted_student_df[lookup_column] == scanned_value_for_lookup]
+
+                        except KeyError:
+                            self.log(f"ERROR (Fallback): Lookup column '{lookup_column}' not found in student data. Please check your Excel headers.")
+                            result["reason"] = f"Lookup column '{lookup_column}' not found."
+                            return result
+                        except Exception as e:
+                            self.log(f"ERROR (Fallback): Exception during student data lookup: {str(e)}")
+                            result["reason"] = f"Exception during fallback lookup: {str(e)}"
+                            return result
+
+                        if not matched_rows.empty:
+                            result["status"] = MATCH_PRIMARY # Treat old logic as primary match
+                            result["student_info"] = self._create_mapped_student_info(matched_rows.iloc[0])
+                            result["reason"] = f"Primary match found for '{scanned_value_for_lookup}' (fallback)."
+                            self.log(f"DEBUG (Fallback): {result['reason']}")
+                        else:
+                            result["reason"] = f"No match found for '{scanned_value_for_lookup}' in column '{lookup_column}' (fallback)."
+                            self.log(f"DEBUG (Fallback): Match NOT FOUND for '{lookup_roi}': '{scanned_value_for_lookup}' in column '{lookup_column}'")
+                            self.log(f"DEBUG (Fallback): All formatted values in column '{lookup_column}': {formatted_student_df[lookup_column].tolist()}")
+                    else:
+                        self.log(f"DEBUG (Fallback): No scanned value available for lookup ROI: '{lookup_roi}'")
+                        result["reason"] = f"No scanned value for '{lookup_roi}' (fallback)."
+                else:
+                    self.log("DEBUG (Fallback): No active output pattern with student data lookup configured or lookup ROI/column missing.")
+                    result["reason"] = "No fallback lookup configured."
+                return result
+
+            # --- Advanced Matching Logic ---
+            matching_rule = self.active_matching_rule
+            primary_roi = matching_rule["primary_match"]["roi_name"]
+            primary_excel_col = matching_rule["primary_match"]["excel_column"]
+            secondary_matching_enabled = matching_rule["secondary_matching_enabled"]
+            secondary_identifiers = matching_rule["secondary_match_identifiers"]
+            display_columns = matching_rule["display_columns"]
+
+            scanned_primary_value = scanned_ids.get(primary_roi)
+            self.log(f"DEBUG (Advanced): Primary Match ROI: '{primary_roi}' -> Excel Column: '{primary_excel_col}'")
+            self.log(f"DEBUG (Advanced): Scanned Primary Value (before format): '{scanned_primary_value}'")
+
+            if not scanned_primary_value:
+                result["reason"] = f"No scanned value for primary ROI '{primary_roi}'."
+                self.log(f"DEBUG (Advanced): {result['reason']}")
+                return result
+            
+            formatted_scanned_primary_value = self._format_identifier(primary_roi, str(scanned_primary_value))
+            self.log(f"DEBUG (Advanced): Scanned Primary Value (AFTER format): '{formatted_scanned_primary_value}'")
+
+            # 1. Attempt Primary Match
+            if primary_excel_col not in formatted_student_df.columns:
+                self.log(f"ERROR (Advanced): Primary Excel column '{primary_excel_col}' not found in student data.")
+                result["reason"] = f"Primary Excel column '{primary_excel_col}' not found."
+                return result
+
+            primary_match_df = self.student_data[formatted_student_df[primary_excel_col] == formatted_scanned_primary_value]
+
+            if not primary_match_df.empty:
+                # --- Secondary Key Validation on Primary Match ---
+                matched_row_original = self.student_data.loc[primary_match_df.index[0]]
+                mismatched_secondaries = []
+                if secondary_matching_enabled and secondary_identifiers:
+                    for sec_ident in secondary_identifiers:
+                        sec_roi = sec_ident["roi_name"]
+                        sec_excel_col = sec_ident["excel_column"]
+
+                        if sec_excel_col not in formatted_student_df.columns:
+                            self.log(f"WARNING: Secondary validation skipped for '{sec_roi}'. Column '{sec_excel_col}' not in student data.")
+                            continue
+                        
+                        scanned_sec_value = scanned_ids.get(sec_roi)
+                        if scanned_sec_value is None or str(scanned_sec_value).strip() == '':
+                            continue
+
+                        excel_sec_value = formatted_student_df.loc[primary_match_df.index[0]][sec_excel_col]
+                        formatted_scanned_sec_value = self._format_identifier(sec_roi, str(scanned_sec_value))
+
+                        if formatted_scanned_sec_value != excel_sec_value:
+                            mismatched_secondaries.append({
+                                "roi": sec_roi,
+                                "scanned": str(scanned_sec_value),
+                                "expected": str(matched_row_original[sec_excel_col])
+                            })
+                
+                if mismatched_secondaries:
+                    result["status"] = MATCH_PRIMARY_MISMATCH_SECONDARY
+                    result["mismatched_data"] = mismatched_secondaries
+                    result["student_info"] = self._create_mapped_student_info(matched_row_original)
+                    result["reason"] = "Primary match found, but secondary identifiers do not match."
+                    self.log(f"DEBUG (Advanced): {result['reason']} {mismatched_secondaries}")
+                    return result
+                
+                # If we reach here, validation passed
+                result["status"] = MATCH_PRIMARY
+                result["student_info"] = self._create_mapped_student_info(matched_row_original)
+                result["reason"] = f"Primary match found for '{formatted_scanned_primary_value}'."
+                self.log(f"DEBUG (Advanced): {result['reason']}")
+                return result
+            else:
+                self.log(f"DEBUG (Advanced): Primary match NOT FOUND for '{formatted_scanned_primary_value}'.")
+                result["reason"] = f"Primary match failed for '{formatted_scanned_primary_value}'."
+
+            # 2. Attempt Secondary Matching if Enabled and Primary Failed
+            if secondary_matching_enabled and secondary_identifiers:
+                self.log("DEBUG (Advanced): Primary match failed, attempting secondary matching.")
+                secondary_conditions = pd.Series([True] * len(formatted_student_df), index=formatted_student_df.index)
+
+                all_secondary_scanned_values_present = True
+                for sec_ident in secondary_identifiers:
+                    sec_roi = sec_ident["roi_name"]
+                    sec_excel_col = sec_ident["excel_column"]
+
+                    scanned_sec_value = scanned_ids.get(sec_roi)
+                    self.log(f"DEBUG (Advanced): Secondary ROI: '{sec_roi}' -> Excel Column: '{sec_excel_col}'")
+                    self.log(f"DEBUG (Advanced): Scanned Secondary Value (before format): '{scanned_sec_value}'")
+
+                    if not scanned_sec_value:
+                        self.log(f"DEBUG (Advanced): No scanned value for secondary ROI '{sec_roi}'. Cannot perform full secondary match.")
+                        all_secondary_scanned_values_present = False
+                        break 
+
+                    formatted_scanned_sec_value = self._format_identifier(sec_roi, str(scanned_sec_value))
+                    self.log(f"DEBUG (Advanced): Scanned Secondary Value (AFTER format): '{formatted_scanned_sec_value}'")
+                    
+                    if sec_excel_col not in formatted_student_df.columns:
+                        self.log(f"ERROR (Advanced): Secondary Excel column '{sec_excel_col}' not found in student data. Cannot perform full secondary match.")
+                        all_secondary_scanned_values_present = False
+                        break 
+
+                    secondary_conditions &= (formatted_student_df[sec_excel_col] == formatted_scanned_sec_value)
+                    self.log(f"DEBUG (Advanced): Condition for '{sec_roi}' matched {secondary_conditions.sum()} rows.")
+                
+                if all_secondary_scanned_values_present:
+                    secondary_match_df = self.student_data[secondary_conditions]
+
+                    if not secondary_match_df.empty:
+                        if len(secondary_match_df) == 1:
+                            result["status"] = MATCH_SINGLE_SECONDARY
+                            result["student_info"] = self._create_mapped_student_info(secondary_match_df.iloc[0])
+                            result["suggested_primary_id"] = self._format_identifier(primary_excel_col, str(result["student_info"].get(primary_excel_col, ""))) # Get from matched record
+                            result["reason"] = f"Single secondary match found. Suggested primary ID: '{result['suggested_primary_id']}'"
+                            self.log(f"DEBUG (Advanced): {result['reason']}")
+                        else:
+                            result["status"] = MATCH_MULTIPLE_SECONDARY
+                            result["reason"] = f"Multiple secondary matches found ({len(secondary_match_df)} rows)."
+                            self.log(f"DEBUG (Advanced): {result['reason']}")
+                            
+                            # Prepare potential matches with display columns
+                            for index, row in secondary_match_df.iterrows():
+                                match_info = {}
+                                for col in display_columns:
+                                    match_info[col] = row.get(col, "N/A")
+                                # Instead of full data, store the index to retrieve it later
+                                match_info["__row_index__"] = index
+                                result["potential_matches"].append(match_info)
+                    else:
+                        result["reason"] = "No secondary matches found."
+                        self.log(f"DEBUG (Advanced): {result['reason']}")
+                else:
+                    result["reason"] = "Cannot perform secondary matching due to missing scanned values or excel columns."
+                    self.log(f"DEBUG (Advanced): {result['reason']}")
+            else:
+                self.log("DEBUG (Advanced): Secondary matching not enabled or no secondary identifiers configured.")
+                result["reason"] = "Primary match failed and secondary matching not used."
+        except Exception as e:
+            self.log(f"ERROR: Unhandled exception in _get_student_info: {str(e)}")
+            result["reason"] = f"Internal error during student info lookup: {str(e)}"
+        
+        return result
 
     def _get_all_possible_columns(self):
         """Generates a comprehensive list of all possible columns for the Excel output."""
@@ -1771,6 +2699,57 @@ class CheckerWindow(QWidget):
             
         # Return a list with unique values, preserving order
         return list(dict.fromkeys(columns))
+
+    def _load_matching_rule_by_name(self, rule_name):
+        if not rule_name:
+            return None
+
+        self.advanced_matching_settings.beginGroup(rule_name)
+        rule = {
+            "name": rule_name,
+            "primary_match": {
+                "roi_name": self.advanced_matching_settings.value("primary_roi", ""),
+                "excel_column": self.advanced_matching_settings.value("primary_excel_col", "")
+            },
+            "secondary_matching_enabled": self.advanced_matching_settings.value("enable_secondary", "false", type=str).lower() == 'true',
+            "secondary_match_identifiers": [], # Will load this as a list of dicts
+            "display_columns": self.advanced_matching_settings.value("display_columns", [], type=list)
+        }
+        
+        # Load secondary match identifiers (stored as list of "roi::column" strings)
+        secondary_idents_raw = self.advanced_matching_settings.value("secondary_match_identifiers", [], type=list)
+        for item_str in secondary_idents_raw:
+            try:
+                roi, col = item_str.split("::")
+                rule["secondary_match_identifiers"].append({"roi_name": roi, "excel_column": col})
+            except ValueError:
+                self.log(f"Warning: Malformed secondary match identifier in rule '{rule_name}': {item_str}")
+                pass
+        
+        # Load dependent mappings
+        rule["dependent_mappings"] = []
+        dependent_mappings_raw = self.advanced_matching_settings.value("dependent_mappings", [], type=list)
+        for item_str in dependent_mappings_raw:
+            try:
+                if_ident, is_value, then_ident, from_value, to_value = item_str.split("::", 4)
+                rule["dependent_mappings"].append({
+                    "if_identifier": if_ident,
+                    "is_value": is_value,
+                    "then_identifier": then_ident,
+                    "from_value": from_value,
+                    "to_value": to_value
+                })
+            except ValueError:
+                self.log(f"Warning: Malformed dependent mapping in rule '{rule_name}': {item_str}")
+
+        self.advanced_matching_settings.endGroup()
+        
+        # Basic validation
+        if not rule["primary_match"]["roi_name"] or not rule["primary_match"]["excel_column"]:
+            self.log(f"Warning: Active matching rule '{rule_name}' has incomplete primary match configuration.")
+            return None
+        
+        return rule
 
     def _move_image_to_error_folder(self, image_index):
         """Moves an image file to a dedicated 'Error Image' subfolder."""
@@ -1813,45 +2792,83 @@ class CheckerWindow(QWidget):
             self.show_toast(f"Could not move error image: {e}", "error")
 
 
-    def _select_output_excel_file(self):
-        dialog_key = "Select Excel File to Append to"
+    def _select_output_csv_file(self):
+        dialog_key = "Select CSV File to Append to"
         initial_path = load_last_path(dialog_key)
-        path, _ = QFileDialog.getOpenFileName(self, dialog_key, initial_path, "Excel Files (*.xlsx)")
+        path, _ = QFileDialog.getSaveFileName(self, dialog_key, initial_path, "CSV Files (*.csv)")
         if path: 
             save_last_path(dialog_key, path) 
-            self.output_excel_path_edit.setText(path)
+            self.output_csv_path_edit.setText(path)
             # Save the path when it's selected
             settings = QSettings("OptiMark Pro", "Defaults")
             settings.setValue("output_append_path", path)
     
-    def _format_identifier(self, value):
-        if isinstance(value, str) and value.isdigit():
-            return str(int(value))
-        return value
+    def _format_identifier(self, roi_name, value):
+        # First, apply custom reference mappings if any
+        mapped_value = apply_identifier_reference(roi_name, value)
+
+        # Then, apply a more robust formatting logic
+        try:
+            # Convert to string, remove leading/trailing whitespace
+            s_value = str(mapped_value).strip()
+            # If it contains a decimal point, try to convert to float then int to drop decimals
+            if '.' in s_value:
+                return str(int(float(s_value)))
+            # If it's all digits, convert to int to remove leading zeros, then back to string
+            elif s_value.isdigit():
+                return str(int(s_value))
+            # Otherwise, return the stripped string as is
+            else:
+                return s_value
+        except (ValueError, TypeError):
+            # If any conversion fails, return the original stripped string
+            return str(mapped_value).strip()
 
     def _set_params_on_ui(self, params):
         self.current_image_processing_params.update(params)
         self.log("Internal image processing parameters updated.")
 
-    def _populate_identifier_checkboxes(self):
-        states = {cb.text(): cb.isChecked() for cb in self.identifier_checkboxes} if hasattr(self, 'identifier_checkboxes') else {}
-        if self.identifier_layout is None: self.log("ERROR: identifier_layout is missing."); return
-        while self.identifier_layout.count():
-            item = self.identifier_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
-        self.identifier_checkboxes.clear()
+    def _populate_identifier_overrides(self):
+        # Clear existing widgets
+        while self.override_layout.count():
+            self.override_layout.takeAt(0).widget().deleteLater()
+        self.identifier_override_widgets.clear()
+
         if not self.template_data:
-            self.identifier_layout.addWidget(QLabel("<i>Load an answer key to see identifiers.</i>"), 0, 0, 1, 2)
+            self.override_layout.addRow(QLabel("<i>Load an answer key to see identifiers.</i>"))
             return
-        identifier_rois = [roi for roi in self.template_data.get('rois', []) if roi.get('type') == 'Identifier']
-        self.identifier_layout.addWidget(QLabel("<b>Select Identifiers to Match:</b>"), 0, 0, 1, 2)
-        row, col = 1, 0
-        for roi in identifier_rois:
-            cb = QCheckBox(roi['name']); cb.setChecked(states.get(roi['name'], True))
-            self.identifier_layout.addWidget(cb, row, col); self.identifier_checkboxes.append(cb)
-            col = 1 - col
-            if col == 0: row += 1
-        self.identifier_layout.setRowStretch(row + 1, 1)
+
+        # Filter for the specific identifiers
+        identifier_rois = [
+            roi for roi in self.template_data.get('rois', []) 
+            if roi.get('type') == 'Identifier' and roi.get('subtype') == 'Answer Script Identifier'
+        ]
+
+        if not identifier_rois:
+            self.override_layout.addRow(QLabel("<i>No overrideable identifiers found in template.</i>"))
+            return
+
+        # Populate with new widgets
+        for roi_data in identifier_rois:
+            name = roi_data.get('name')
+            if not name:
+                continue
+
+            # Determine if it should be a dropdown or a textbox
+            is_single_choice = (int(roi_data.get('rows', 0)) == 1 or int(roi_data.get('cols', 0)) == 1) and roi_data.get('values')
+            
+            widget = None
+            if is_single_choice:
+                # Use QComboBox for single-choice ROIs
+                options = [""] + roi_data.get('values', []) # Add a blank option
+                widget = QComboBox()
+                widget.addItems(list(dict.fromkeys(options))) # Add unique items
+            else:
+                # Use QLineEdit for others
+                widget = QLineEdit()
+            
+            self.override_layout.addRow(QLabel(f"<b>{name}</b>:"), widget)
+            self.identifier_override_widgets[name] = widget
 
     def _update_image_status(self, image_path, status):
         if image_path in self.image_list_items:
@@ -1927,6 +2944,29 @@ class CheckerWindow(QWidget):
             else:
                 self.show_toast("No images found in the selected folder and its subfolders.", level='warning')
 
+    def _hardware_scan(self):
+        if not self.scanner_manager.is_available():
+            QMessageBox.warning(self, "Scanner Error", "TWAIN library not found. Please install 'pytwain'.")
+            return
+        
+        reply = QMessageBox.question(self, "Hardware Scan", "Do you want to show the scanner user interface?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+        show_ui = (reply == QMessageBox.StandardButton.Yes)
+        
+        self.show_toast("Starting hardware scan...", level='info')
+        self.scanner_manager.scan_images(show_ui=show_ui)
+
+    def _on_hardware_image_scanned(self, image_path):
+        self.log(f"New hardware image scanned: {image_path}")
+        # Add to the current image list
+        self.image_paths.append(image_path)
+        item = QListWidgetItem(f"[Pending] {os.path.basename(image_path)}")
+        self.image_list_widget.addItem(item)
+        self.image_list_items[image_path] = item
+        self.image_selection_updated.emit()
+        self.show_toast(f"Scanned: {os.path.basename(image_path)}", level='info')
+
     def _load_image_paths(self, image_paths):
         if not image_paths:
             return
@@ -1953,6 +2993,32 @@ class CheckerWindow(QWidget):
     def _load_current_image_for_display(self):
         if 0 <= self.current_image_index < len(self.image_paths): self.load_image(self.image_paths[self.current_image_index])
         else: self.log("No image to display or invalid image index."); self.current_image = None; self.scene.clear()
+
+    def _advance_scan_process(self):
+        """
+        Increments the image index and starts processing the next image,
+        or ends the scan session if all images are processed.
+        """
+        self.current_image_index += 1
+
+        if self.current_image_index >= len(self.image_paths):
+            self._end_scan_session()
+            return
+
+        image_path = self.image_paths[self.current_image_index]
+        self._update_image_status(image_path, "Processing")
+        self.log(f"Processing image {self.current_image_index + 1}/{len(self.image_paths)}: {os.path.basename(image_path)}")
+        self.load_image(image_path) # Load the image
+        
+        # If in manual mode, simply load and wait for user.
+        # If in auto mode, immediately kick off the scan process for the new image.
+        if self.radio_scan_auto.isChecked():
+            # Run the full auto-scan logic for the next image
+            self._run_auto_batch_scan()
+        else:
+            # Manual mode: re-enable buttons and wait for user interaction
+            # (e.g., re-wrap, accept manual IDs, skip)
+            self._process_current_image_manual_mode()
 
     def _find_matching_answer_key(self):
         if not self.scan_results or not self.answer_key_data: return None
@@ -1984,14 +3050,17 @@ class CheckerWindow(QWidget):
 
             is_match = True
             for name in defined_script_ids_in_key:
-                detected_val = self._format_identifier(str(detected_ids.get(name, "")))
-                key_val = self._format_identifier(str(key_ids.get(name, "")))
+                detected_val = self._format_identifier(name, str(detected_ids.get(name, "")))
+                key_val = self._format_identifier(name, str(key_ids.get(name, "")))
                 if detected_val != key_val:
                     is_match = False
                     break # Mismatch found, move to the next key
             
             if is_match:
                 self.log(f"Found matching answer key: {os.path.basename(key_data['path'])}")
+                # FIX: Set the application's main template to the one from the matched key.
+                # This ensures subsequent processing uses the correct ROI definitions.
+                self.template_data = key_data['template']
                 return key_data
                 
         self.log(f"Could not find a matching answer key for the scanned identifiers: {detected_ids}")
@@ -2028,6 +3097,7 @@ class CheckerWindow(QWidget):
         else: self.log("Starting Manual Scan..."); self._process_current_image_manual_mode()
 
     def _end_scan_session(self):
+        self.auto_scan_preview_timer.stop()
         if hasattr(self, 'scan_progress_label') and self.scan_progress_label:
             self.scan_progress_label.setText("")
         self.btn_start_scan.setVisible(True)
@@ -2039,12 +3109,29 @@ class CheckerWindow(QWidget):
         self.log("Scan session ended.")
 
     def _stop_scan_process(self):
-        self.log("Scan process stopped by user.")
-        self.show_toast("Scan stopped.", "warning")
+        self.auto_scan_preview_timer.stop()
+        self.log("DEBUG: Stop scan called.")
+        if self.current_image_index >= 0 and self.scan_results:
+            self.log("DEBUG: Valid scan results found. Saving before stopping.")
+            self._save_scan_result()
+        else:
+            self.log("DEBUG: No valid results to save upon stopping.")
+
         self.is_scan_stopped = True
-        self._end_scan_session()
+        self.btn_start_scan.setVisible(True)
+        self.btn_skip_image.setVisible(False)
+        self.btn_next_image.setVisible(False)
+        self.btn_accept_manual_ids.setVisible(False)
+        self.btn_stop_scan.setVisible(False)
+        self.scan_progress_label.setText("Scan stopped.")
+
+        # Re-enable UI elements after stopping
+        if self.answer_key_data:
+            self.btn_review_keys.setEnabled(True)
+        self.ans_key_combobox.setEnabled(True)
 
     def _pause_scan_for_manual_intervention(self, message, show_accept_button=True):
+        self.auto_scan_preview_timer.stop()
         if 0 <= self.current_image_index < len(self.image_paths):
             current_path = self.image_paths[self.current_image_index]
             self._update_image_status(current_path, "Error")
@@ -2056,169 +3143,428 @@ class CheckerWindow(QWidget):
         self.btn_skip_image.setVisible(True)
         self.btn_rewrap_image.setVisible(True)
 
-    def _validate_and_pause_if_needed(self):
-        # Returns a status string: 'PASS', 'PAUSE', or 'SKIP'.
+    def _apply_dependent_mappings(self):
+        """
+        Applies conditional value mappings based on the active matching rule.
+        This method reads from self.scan_results and updates it directly via _update_identifier_widget_value.
+        """
+        if not self.active_matching_rule or "dependent_mappings" not in self.active_matching_rule or not self.scan_results:
+            return
 
-        # 1. Check for low-level scanning errors
-        checked_identifiers = {cb.text() for cb in self.identifier_checkboxes if cb.isChecked()}
+        original_ids = self.scan_results.get('identifiers', {}).copy()
+        rules = self.active_matching_rule.get("dependent_mappings", [])
+
+        for rule in rules:
+            if_identifier = rule.get("if_identifier")
+            is_value = rule.get("is_value")
+            then_identifier = rule.get("then_identifier")
+            from_value = rule.get("from_value")
+            to_value = rule.get("to_value")
+
+            # Ensure the rule has all necessary parts
+            if not all([if_identifier, is_value, then_identifier, to_value]):
+                continue
+
+            # Check if the primary 'if' condition is met using original, unmodified values
+            if if_identifier in original_ids and self._format_identifier(if_identifier, original_ids.get(if_identifier, '')) == self._format_identifier(if_identifier, is_value):
+                
+                # Check if the secondary 'and' condition is met (if from_value is specified)
+                # If from_value is blank, it means we should overwrite the 'then_identifier' regardless of its current value.
+                if not from_value or not from_value.strip() or (then_identifier in original_ids and self._format_identifier(then_identifier, original_ids.get(then_identifier, '')) == self._format_identifier(then_identifier, from_value)):
+                    
+                    # Check if a change is actually needed before updating
+                    if self.scan_results['identifiers'].get(then_identifier) != to_value:
+                        self.log(f"DEBUG (Dependency Rule): Condition met. Changing '{then_identifier}' to '{to_value}'.")
+                        
+                        # This function updates both the UI and self.scan_results['identifiers']
+                        self._update_identifier_widget_value(then_identifier, to_value)
+
+    def _validate_and_pause_if_needed(self):
+        # Returns a status string: 'PASS', 'PAUSE', 'RESCAN', or 'SKIP'.
+
         if not self.scan_results: return 'PASS' # No results to validate, pass silently
-        scanned_ids = self.scan_results.get('identifiers', {})
-        error_messages = [f"Identifier '{n}' has a scan error or is missing. Value: '{scanned_ids.get(n, '')}'"
-                          for n in checked_identifiers if not scanned_ids.get(n,'').strip() or any(e in scanned_ids.get(n,'') for e in ["ERR", "MULTI", "_"])]
         
-        if error_messages:
-            message = "One or more required identifiers failed to scan correctly.\n\n" + "\n".join(error_messages) + "\n\nPlease correct the values, then click 'Accept & Continue' or 'Skip Image'."
-            self._pause_scan_for_manual_intervention(message, show_accept_button=True)
+        # 1. Apply any dependent/conditional value mappings. This updates UI and self.scan_results directly.
+        self._apply_dependent_mappings()
+        
+        # 2. Get the (potentially modified) IDs from the single source of truth.
+        scanned_ids = self.scan_results.get('identifiers', {})
+        
+        # 3. Perform Advanced Student Data Lookup with the potentially modified IDs.
+        match_result = self._get_student_info(scanned_ids)
+        
+        primary_roi_name = 'Primary ID' # Default
+        if self.active_matching_rule:
+            primary_roi_name = self.active_matching_rule.get("primary_match", {}).get("roi_name", primary_roi_name)
+        elif self.active_output_pattern:
+            primary_roi_name = self.active_output_pattern.get('lookup_roi', primary_roi_name)
+
+        # 2. Handle different match statuses.
+        
+        # A. Perfect primary match or a mismatch that the user resolves by accepting the scanned values.
+        if match_result["status"] == MATCH_PRIMARY:
+            self.log(f"DEBUG: Student ID matched: {match_result['student_info'].get(primary_roi_name, 'N/A')}")
+            self.student_info_for_output = match_result["student_info"]
+            return 'PASS'
+
+        # B. Primary match found, but some secondary fields don't match the database.
+        elif match_result["status"] == MATCH_PRIMARY_MISMATCH_SECONDARY:
+            action = self._handle_mismatch_dialog(match_result)
+            # This can return 'PASS', 'RESCAN', 'PAUSE', or 'SKIP' based on user's choice.
+            if action == 'RESCAN':
+                # Re-run validation after UI has been updated to confirm the new state.
+                return self._validate_and_pause_if_needed()
+            return action
+
+        # C. No primary match, but a single, unique match found on secondary keys.
+        elif match_result["status"] == MATCH_SINGLE_SECONDARY:
+            # If a choice has been remembered for this session, use it automatically.
+            if self.remembered_secondary_match_choice:
+                action = self.remembered_secondary_match_choice
+                self.log(f"DEBUG: Applying remembered secondary match choice: {action}")
+                if action == "ACCEPTED":
+                    self.log(f"DEBUG: Auto-accepting suggested primary ID: {match_result['suggested_primary_id']}")
+                    self._update_identifier_widget_value(primary_roi_name, match_result["suggested_primary_id"])
+                    self.student_info_for_output = match_result["student_info"]
+                    return 'PASS'
+                elif action == "MANUAL_CORRECTION":
+                    # Even if remembered, manual correction still requires user input.
+                    return self._handle_manual_correction(primary_roi_name, scanned_ids.get(primary_roi_name, ''))
+
+            # If no choice is remembered, show the dialog.
+            display_columns = self.active_matching_rule.get("display_columns", [])
+            
+            dialog_match_result = match_result.copy()
+            full_student_info = match_result.get("student_info")
+            if full_student_info is not None and display_columns:
+                dialog_match_result["student_info"] = {
+                    col: full_student_info.get(col, "N/A") for col in display_columns
+                }
+
+            dialog = SingleSecondaryMatchDialog(
+                match_result=dialog_match_result,
+                display_columns=display_columns,
+                scanned_primary_id=scanned_ids.get(primary_roi_name, "N/A"),
+                primary_roi_name=primary_roi_name,
+                parent=self
+            )
+            apply_stylesheet_and_floatation(dialog)
+            
+            dialog_code = dialog.exec()
+            action = dialog.get_result()
+
+            # After the dialog closes, check if the user wanted to remember the choice.
+            if dialog.is_remember_checked():
+                if action in ["ACCEPTED", "MANUAL_CORRECTION"]:
+                    self.remembered_secondary_match_choice = action
+                    self.log(f"DEBUG: Secondary match choice '{action}' will be remembered for this session.")
+
+            if dialog_code == QDialog.DialogCode.Accepted: # This is only for "ACCEPTED"
+                self.log(f"DEBUG: User accepted suggested primary ID: {match_result['suggested_primary_id']}")
+                self._update_identifier_widget_value(primary_roi_name, match_result["suggested_primary_id"])
+                self.student_info_for_output = match_result["student_info"]
+                return 'PASS'
+            else: # Dialog was rejected or another action was chosen
+                if action == "MANUAL_CORRECTION":
+                    return self._handle_manual_correction(primary_roi_name, scanned_ids.get(primary_roi_name, ''))
+                elif action == "SKIP_SHEET":
+                    return 'SKIP'
+                else: # Dialog rejected/closed, treat as pause
+                    self._pause_scan_for_manual_intervention(match_result["reason"] + "\nPlease correct the value, accept, or skip.", show_accept_button=True)
+                    return 'PAUSE'
+
+        # D. Multiple potential matches found on secondary keys.
+        elif match_result["status"] == MATCH_MULTIPLE_SECONDARY:
+            dialog = MultipleMatchesDialog(
+                potential_matches=match_result["potential_matches"],
+                display_columns=self.active_matching_rule.get("display_columns", []),
+                scanned_primary_id=scanned_ids.get(primary_roi_name, "N/A"),
+                primary_roi_name=primary_roi_name,
+                parent=self
+            )
+            apply_stylesheet_and_floatation(dialog)
+
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                selected_item = dialog.get_selected_student_info()
+                if selected_item and "__row_index__" in selected_item:
+                    row_index = selected_item["__row_index__"]
+                    selected_student_info = self._create_mapped_student_info(self.student_data.loc[row_index])
+
+                    self.log(f"DEBUG: User selected student record via index {row_index}: {selected_student_info.get(primary_roi_name, 'N/A')}")
+                    
+                    suggested_id = self._format_identifier(primary_roi_name, str(selected_student_info.get(primary_roi_name, "")))
+                    self._update_identifier_widget_value(primary_roi_name, suggested_id)
+                    self.student_info_for_output = selected_student_info
+                    return 'PASS'
+                else:
+                    self.log("DEBUG: Multiple matches dialog accepted but no valid item was selected, pausing.")
+                    self._pause_scan_for_manual_intervention(match_result["reason"] + "\nPlease select a student, correct, or skip.", show_accept_button=True)
+                    return 'PAUSE'
+            else: # Dialog rejected or another action chosen
+                action, _ = dialog.get_result()
+                if action == "MANUAL_CORRECTION":
+                    return self._handle_manual_correction(primary_roi_name, scanned_ids.get(primary_roi_name, ''))
+                elif action == "SKIP_SHEET":
+                    return 'SKIP'
+            
+            # If we fall through, it means the user closed the dialog or didn't make a choice. Pause.
+            self._pause_scan_for_manual_intervention(match_result["reason"] + "\nPlease select a student, correct, or skip.", show_accept_button=True)
             return 'PAUSE'
 
-        # 2. If student data is loaded, check for a match.
-        if self.student_data is not None and not self.student_data.empty:
-            student_info = self._get_student_info(scanned_ids)
-            if not student_info: # No match found
-                lookup_roi_name = self.active_output_pattern.get('lookup_roi') if self.active_output_pattern else "configured lookup ROI"
-                scanned_value = scanned_ids.get(lookup_roi_name, 'N/A') if lookup_roi_name != "configured lookup ROI" else 'N/A'
-                message = f"Identifier value '{scanned_value}' for '{lookup_roi_name}' not found in student data."
+        # E. No match found at all. NOW we check for low-level scanning errors.
+        elif match_result["status"] == MATCH_NO_MATCH:
+            self.log("DEBUG: No student record found. Checking for low-level scanning errors as a possible cause.")
+            self.student_info_for_output = None # No student info found
 
-                self._pause_scan_for_manual_intervention(message + "\nPlease correct the value, accept, or skip.", show_accept_button=True)
-                return 'PAUSE'
-        
-        # 3. All checks passed
-        return 'PASS'
+            # Check for low-level scanning errors (moved from the top of the function)
+            checked_identifiers = self.identifier_override_widgets.keys()
+            error_messages = []
+            for n in checked_identifiers:
+                value = scanned_ids.get(n, '')
+                if not value.strip():
+                    error_messages.append(f"Identifier '{n}' is empty or contains only whitespace.")
+                else:
+                    reasons = []
+                    if "ERR" in value: reasons.append("scan error")
+                    if "*" in value: reasons.append("multiple marks")
+                    if "_" in value: reasons.append("empty/no mark")
+                    if reasons:
+                        error_messages.append(f"Identifier '{n}' has a {', '.join(reasons)} (Value: '{value}')")
+            
+            # If we found specific scan errors, show them. They are the most likely cause of the failed match.
+            if error_messages:
+                message = "No student match found. This may be due to scanning errors:\n\n" + "\n".join(error_messages) + "\n\nPlease correct the values, then click 'Accept & Continue' or 'Skip Image'."
+                self._pause_scan_for_manual_intervention(message, show_accept_button=True)
+            else:
+                # If there are no obvious scan errors, just show the reason from the matching logic.
+                message = match_result["reason"] + "\nPlease correct the value, accept, or skip."
+                self._pause_scan_for_manual_intervention(message, show_accept_button=True)
+            return 'PAUSE'
+
+        # This part should theoretically not be reached if all statuses are handled
+        self.log(f"WARNING: Unhandled match status: {match_result['status']}")
+        self._pause_scan_for_manual_intervention(f"Unhandled matching scenario: {match_result['status']}", show_accept_button=True)
+        return 'PAUSE'
 
     def _process_current_image_manual_mode(self):
         self.btn_accept_manual_ids.setVisible(False)
         self.current_matched_key_path = None # Reset for new image
 
-        if 0 <= self.current_image_index < len(self.image_paths):
-            image_path = self.image_paths[self.current_image_index]
-            if hasattr(self, 'scan_progress_label') and self.scan_progress_label:
-                total_images = len(self.image_paths)
-                current_num = self.current_image_index + 1
-                self.scan_progress_label.setText(f"Scanning {current_num} of {total_images}")
-            self._update_image_status(image_path, "Processing")
-            self.log(f"Processing image {self.current_image_index + 1}/{len(self.image_paths)}: {os.path.basename(image_path)}")
-            self.load_image(image_path)
-            if self.run_auto_corner_detection():
-                matching_key = self._find_matching_answer_key()
-                if matching_key:
-                    self.correct_answers_map = matching_key['answers']
-                    self.current_matched_key_path = matching_key['path']
-                    self.log(f"Applied matching answer key: {os.path.basename(matching_key['path'])}")
-                    self._update_image_status(image_path, "Processing") # Update status with key
-                else:
-                    self.current_matched_key_path = "Not Found"
-                    self._update_image_status(image_path, "Error") # Update status with key not found
-                    self.show_toast(f"No matching answer key found for {os.path.basename(image_path)}. Skipping.", 'warning')
-                    self._skip_current_image(); return
-                validation_status = self._validate_and_pause_if_needed()
-                if validation_status == 'PASS':
-                    self.btn_next_image.setVisible(True)
-                    self.btn_skip_image.setVisible(True)
-                    self.btn_rewrap_image.setVisible(False)
-                elif validation_status == 'SKIP':
-                    self._skip_current_image()
-                    return
-        else:
+        if not (0 <= self.current_image_index < len(self.image_paths)):
             self.show_toast("All selected images have been processed.", 'info')
             self._end_scan_session()
-
-    def _run_auto_batch_scan(self):
-        if self.is_scan_stopped:
             return
 
-        if not (0 <= self.current_image_index < len(self.image_paths)):
-            self.show_toast(f"Auto scan processed {len(self.image_paths)} images.", 'info')
-            self._end_scan_session(); return
-        
-        self.current_matched_key_path = None # Reset for new image
-        i = self.current_image_index
-        image_path = self.image_paths[i]
+        image_path = self.image_paths[self.current_image_index]
         if hasattr(self, 'scan_progress_label') and self.scan_progress_label:
             total_images = len(self.image_paths)
             current_num = self.current_image_index + 1
             self.scan_progress_label.setText(f"Scanning {current_num} of {total_images}")
-        self._update_image_status(image_path, "Processing")
-        self.log(f"Processing image {i + 1}/{len(self.image_paths)}: {os.path.basename(image_path)}")
-        self.load_image(image_path)
-        if not self.run_auto_corner_detection():
-            self.current_matched_key_path = "Scan Error"
-            self._update_image_status(image_path, "Error")
-            return
         
+        self._update_image_status(image_path, "Processing")
+        self.log(f"Processing image {self.current_image_index + 1}/{len(self.image_paths)}: {os.path.basename(image_path)}")
+        self.load_image(image_path)
+
+        # --- REFACTORED SCAN LOGIC FOR MANUAL MODE ---
+        initial_template = self.template_data
+        if not self.run_auto_corner_detection():
+            # Failure is handled inside run_auto_corner_detection by pausing
+            return
+
+        if initial_template != self.template_data:
+            self.log("Template mismatch corrected. Re-running scan with the correct template for manual review.")
+            if not self.run_auto_corner_detection():
+                # Failure on the second try
+                return
+
+        # --- Proceed with validation and UI updates ---
         matching_key = self._find_matching_answer_key()
         if not matching_key:
-            message = f"No matching answer key found for {os.path.basename(image_path)}."
             self.current_matched_key_path = "Not Found"
-            self._update_image_status(image_path, "Error")
-            self.log(f"ERROR: {message} Pausing scan.")
-            self._pause_scan_for_manual_intervention(message + "\nPlease correct the identifiers, accept, or skip.", show_accept_button=True)
+            self._update_image_status(image_path, "Error") # Update status with key not found
+            self.show_toast(f"No matching answer key found for {os.path.basename(image_path)}. Please skip or correct identifiers.", 'warning')
+            self._pause_scan_for_manual_intervention("No matching answer key found.", show_accept_button=True)
             return
 
+        self.correct_answers_map = matching_key['answers']
         self.current_matched_key_path = matching_key['path']
-        self._update_image_status(image_path, "Processing") # Update status to show found key
-
+        self.log(f"Applied matching answer key: {os.path.basename(matching_key['path'])}")
+        self._update_image_status(image_path, "Processing") # Update status with key
+        
         validation_status = self._validate_and_pause_if_needed()
-        if validation_status == 'PAUSE':
-            self.log("Auto-scan paused for identifier correction.")
-            return
-        if validation_status == 'SKIP':
+        if validation_status == 'PASS':
+            self.btn_next_image.setVisible(True)
+            self.btn_skip_image.setVisible(True)
+            self.btn_rewrap_image.setVisible(False)
+        elif validation_status == 'SKIP':
             self._skip_current_image()
             return
-        
-        if self.scan_results: self._save_scan_result()
-        self._skip_current_image()
+
+    def _run_auto_batch_scan(self):
+        try:
+            if self.is_scan_stopped:
+                return
+
+            if not (0 <= self.current_image_index < len(self.image_paths)):
+                self.show_toast(f"Auto scan processed {len(self.image_paths)} images.", 'info')
+                self._end_scan_session(); return
+            
+            self.current_matched_key_path = None # Reset for new image
+            i = self.current_image_index
+            image_path = self.image_paths[i]
+            
+            if hasattr(self, 'scan_progress_label') and self.scan_progress_label:
+                total_images = len(self.image_paths)
+                current_num = self.current_image_index + 1
+                self.scan_progress_label.setText(f"Scanning {current_num} of {total_images}")
+            
+            self._update_image_status(image_path, "Processing")
+            self.log(f"Processing image {i + 1}/{len(self.image_paths)}: {os.path.basename(image_path)}")
+            self.load_image(image_path)
+
+            # --- REFACTORED SCAN LOGIC ---
+            # 1. Run initial scan with whatever template is currently loaded
+            initial_template = self.template_data
+            if not self.run_auto_corner_detection():
+                self.log("Initial corner detection failed. Pausing.")
+                self.current_matched_key_path = "Scan Error"
+                self._update_image_status(image_path, "Error")
+                self._pause_scan_for_manual_intervention("Automatic corner detection failed.", show_accept_button=False)
+                return
+
+            # 2. _find_matching_answer_key() has now updated self.template_data to the correct one.
+            #    Check if a mismatch was found and corrected.
+            if initial_template != self.template_data:
+                self.log("Template mismatch corrected. Re-running corner detection with the correct template.")
+                # 3. If so, re-run the scan with the NEWLY loaded correct template to fix geometry.
+                if not self.run_auto_corner_detection():
+                    self.log("Corner detection failed on 2nd attempt with correct template. Pausing.")
+                    self.current_matched_key_path = "Scan Error"
+                    self._update_image_status(image_path, "Error")
+                    self._pause_scan_for_manual_intervention("Corner detection failed after template correction.", show_accept_button=False)
+                    return
+            
+            # 4. At this point, the scan is complete and used the correct template.
+            #    Retrieve the matching key again, as it was found during the last scan.
+            matching_key = self._find_matching_answer_key()
+            if not matching_key:
+                message = f"No matching answer key found for {os.path.basename(image_path)}."
+                self.current_matched_key_path = "Not Found"
+                self._update_image_status(image_path, "Error")
+                self.log(f"ERROR: {message} Pausing scan.")
+                self._pause_scan_for_manual_intervention(message + "\nPlease correct the identifiers, accept, or skip.", show_accept_button=True)
+                return
+
+            self.current_matched_key_path = matching_key['path']
+            self._update_image_status(image_path, "Processing") # Update status to show found key
+
+            validation_status = self._validate_and_pause_if_needed()
+            if validation_status == 'PAUSE':
+                self.log("Auto-scan paused for identifier correction.")
+                return
+            if validation_status == 'SKIP':
+                self._skip_current_image()
+                return
+            
+            # If validation passes, automatically save and proceed to the next image
+            # without waiting for the user to click "Next".
+            if validation_status == 'PASS':
+                self.log("Auto-scan for current image complete and validated. Automatically saving and proceeding.")
+                self._save_scan_result()
+                self.last_zoom_transform = self.view.transform()
+                self.auto_scan_preview_timer.start(200) # Short delay before advancing
+            else:
+                # Fallback for any other unhandled statuses, maintaining original behavior for review.
+                self.log(f"Auto-scan for current image complete with status '{validation_status}'. Pausing for user review.")
+                self.btn_next_image.setVisible(True)
+                self.btn_skip_image.setVisible(True)
+        except Exception as e:
+            self.log(f"CRITICAL ERROR during auto-batch scan for image {self.current_image_index}: {e}")
+            self.show_toast(f"Critical error during auto-scan: {e}", "error")
+            self._update_image_status(self.image_paths[self.current_image_index], "Error")
+            # Pause the scan for manual intervention
+            self._pause_scan_for_manual_intervention(f"A critical error occurred: {e}\nPlease correct the issue or skip the image.", show_accept_button=False)
 
     def _skip_current_image(self):
-        if not (0 <= self.current_image_index < len(self.image_paths)): return
-        
-        image_path = self.image_paths[self.current_image_index]
-        self.log(f"User manually skipped image: {os.path.basename(image_path)}")
+        self.last_zoom_transform = self.view.transform()
+        try:
+            if not (0 <= self.current_image_index < len(self.image_paths)): return
+            
+            image_path = self.image_paths[self.current_image_index]
+            self.log(f"User manually skipped image: {os.path.basename(image_path)}")
 
-        # Move the file to the "Error Image" folder
-        self._move_image_to_error_folder(self.current_image_index)
-        
-        # Update the UI list with the final status for the (now moved) image
-        new_image_path = self.image_paths[self.current_image_index]
-        self._update_image_status(new_image_path, "Skipped")
-        
-        # Now proceed to the next image
-        self._process_next_image()
+            # Move the file to the "Error Image" folder
+            self._move_image_to_error_folder(self.current_image_index)
+            
+            # Update the UI list with the final status for the (now moved) image
+            new_image_path = self.image_paths[self.current_image_index]
+            self._update_image_status(new_image_path, "Skipped")
+            
+            # Now proceed to the next image
+            self._advance_scan_process()
+        except Exception as e:
+            self.log(f"CRITICAL ERROR in _skip_current_image: {e}")
+            self.show_toast(f"Error skipping image: {e}", "error")
+            # Attempt to end the scan session gracefully to avoid further issues
+            self._end_scan_session()
 
     def _accept_manual_ids_and_continue(self):
+        self.last_zoom_transform = self.view.transform()
         self.log("Attempting to accept manual identifiers...")
 
         # The identifier values in self.scan_results are updated automatically by the UI widgets' signals.
         # We just need to re-run the validation.
         validation_status = self._validate_and_pause_if_needed()
-        if validation_status != 'PASS':
-            # The validation failed again (e.g., still no match), and the function has already re-paused or determined a skip.
-            self.show_toast("Validation still fails. Please correct the identifier or skip.", 'warning')
+
+        if validation_status == 'SKIP':
+            self._skip_current_image()
+            return
+        
+        if validation_status in ['PAUSE', 'RESCAN']:
+            # The validation failed again or triggered a rescan, and the function has already re-paused.
+            self.show_toast("Validation failed or view has been updated. Please review and accept again.", 'warning')
             return
 
-        # If we get here, validation passed.
-        self.log("Manual identifiers accepted. Saving result and continuing scan.")
-        self.btn_accept_manual_ids.setVisible(False)
-        self.btn_rewrap_image.setVisible(False)
-        self._save_scan_result()
-        
-        if self.current_image_index >= len(self.image_paths) - 1:
-            self.log("Processing final image after manual correction.")
-            self._end_scan_session()
-        else:
-            self._skip_current_image()
+        if validation_status == 'PASS':
+            # If validation passes, it means a unique, confirmed student record was found.
+            # self.student_info_for_output is now populated. Let's update the UI with it.
+            if self.student_info_for_output and self.active_matching_rule:
+                self.log("DEBUG: Validation passed. Updating UI with matched student info before saving.")
+                
+                # Build the ROI -> Excel Column mapping from the active rule
+                mappings = {}
+                primary_match = self.active_matching_rule.get("primary_match", {})
+                if primary_match.get("roi_name") and primary_match.get("excel_column"):
+                    mappings[primary_match["roi_name"]] = primary_match["excel_column"]
+                
+                for sec_ident in self.active_matching_rule.get("secondary_match_identifiers", []):
+                    if sec_ident.get("roi_name") and sec_ident.get("excel_column"):
+                        mappings[sec_ident["roi_name"]] = sec_ident["excel_column"]
+
+                # Update all configured identifier widgets with data from the matched Excel row
+                for roi_name, excel_col in mappings.items():
+                    # The student_info_for_output contains original column names from Excel
+                    if excel_col in self.student_info_for_output:
+                        new_value = self.student_info_for_output[excel_col]
+                        self._update_identifier_widget_value(roi_name, str(new_value))
+
+            # Proceed to save and move to the next image
+            self.log("Manual identifiers accepted. Saving result and continuing scan.")
+            self.btn_accept_manual_ids.setVisible(False)
+            self.btn_rewrap_image.setVisible(False)
+            self._save_scan_result()
+            
+            # After saving, advance to the next image
+            self._advance_scan_process()
 
     def _process_next_image(self):
+        self.last_zoom_transform = self.view.transform()
         self.btn_rewrap_image.setVisible(False)
         if self.scan_results:
-            if any(not self.scan_results.get('identifiers', {}).get(n) for n in {cb.text() for cb in self.identifier_checkboxes if cb.isChecked()}):
-                self.show_toast("A required identifier is empty. Please fill it.", 'warning'); return
             self._save_scan_result()
 
-        if self.current_image_index >= len(self.image_paths) - 1:
-            self.log("Processing final image in manual mode.")
-            self._end_scan_session()
-        else:
-            self._skip_current_image()
+        # Always advance to the next image after processing/saving the current one
+        self._advance_scan_process()
 
     def closeEvent(self, event):
         settings = QSettings("OptiMark Pro", "Defaults")
