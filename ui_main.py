@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QTabWidget, QLabel, QHBoxLayout, QGraphicsDropShadowEffect, 
                              QScrollArea, QStatusBar, QStyle, QMessageBox, QPushButton, QSplashScreen)
 from PyQt6.QtCore import QSettings, Qt, QSize, QThread, QObject, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QPixmap, QPainter, QPainterPath
+from PyQt6.QtGui import QFont, QPixmap, QPainter, QPainterPath, QIcon
 from ui_builder import TemplateBuilder
 from ui_answer_key_scanner import AnswerKeyScannerWindow
 from ui_checker import CheckerWindow
@@ -12,6 +12,7 @@ from ui_about import AboutWindow
 from ui_registration import RegistrationPage
 from ui_navigation import NavigationScreen
 from ui_manual import ManualWindow
+from ui_combiner import ResultCombiner
 from theme import apply_stylesheet_and_floatation
 from license_manager import verify_license
 from resource_path import resource_path
@@ -47,6 +48,7 @@ class OMRApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("OptiMark Pro")
         self.setObjectName("OMRAppMainWindow")
+        self.setWindowIcon(QIcon(resource_path('images/optimark.ico')))
         self.is_licensed = False # Add license state flag
 
         self.central_widget = QWidget()
@@ -72,6 +74,7 @@ class OMRApp(QMainWindow):
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
         
         self.apply_theme_to_all()
+        self.lock_ui_initial_state() 
         self.check_license()
         
         home_index = self.find_tab_by_name("Home")
@@ -85,6 +88,7 @@ class OMRApp(QMainWindow):
         self.builder_page = TemplateBuilder()
         self.scanner_page = AnswerKeyScannerWindow()
         self.checker_page = CheckerWindow()
+        self.combiner_page = ResultCombiner()
         self.settings_page = SettingsPage()
         
         about_scroll = QScrollArea()
@@ -98,6 +102,7 @@ class OMRApp(QMainWindow):
         self.tab_widget.addTab(self.builder_page, "Template Builder")
         self.tab_widget.addTab(self.scanner_page, "Answer Key Scanner")
         self.tab_widget.addTab(self.checker_page, "Answer Checker")
+        self.tab_widget.addTab(self.combiner_page, "Result Combiner")
         self.tab_widget.addTab(self.settings_page, "Settings")
         self.tab_widget.addTab(self.about_page, "About")
         self.tab_widget.addTab(self.registration_page, "Registration")
@@ -112,6 +117,7 @@ class OMRApp(QMainWindow):
             "Template Builder": QStyle.StandardPixmap.SP_FileIcon,
             "Answer Key Scanner": QStyle.StandardPixmap.SP_DialogYesButton,
             "Answer Checker": QStyle.StandardPixmap.SP_DialogApplyButton,
+            "Result Combiner": QStyle.StandardPixmap.SP_FileDialogContentsView,
             "Settings": QStyle.StandardPixmap.SP_FileDialogDetailedView,
             "About": QStyle.StandardPixmap.SP_MessageBoxInformation,
             "Registration": QStyle.StandardPixmap.SP_DialogApplyButton,
@@ -198,6 +204,7 @@ class OMRApp(QMainWindow):
         if hasattr(self.builder_page, 'apply_theme'): self.builder_page.apply_theme()
         if hasattr(self.scanner_page, 'apply_theme'): self.scanner_page.apply_theme()
         if hasattr(self.checker_page, 'apply_theme'): self.checker_page.apply_theme()
+        if hasattr(self.combiner_page, 'apply_theme'): self.combiner_page.apply_theme()
 
     def check_license(self, show_success_popup=False):
         self.thread = QThread()
@@ -216,7 +223,27 @@ class OMRApp(QMainWindow):
             self.unlock_ui(show_popup=show_success_popup)
         else:
             self.lock_ui()
-        self.update_registration_status()
+        # Update RegistrationPage directly with the result from the initial check
+        if hasattr(self, 'registration_page') and self.registration_page:
+            self.registration_page.update_status(is_valid, message)
+
+    def lock_ui_initial_state(self):
+        """Disables most features immediately at startup, allowing only essential tabs."""
+        allowed_tabs_without_license = ["Home", "About", "Registration", "User Manual", "Navigation"]
+        
+        for i in range(self.tab_widget.count()):
+            tab_name = self.tab_widget.tabText(i)
+            if tab_name in allowed_tabs_without_license:
+                self.tab_widget.setTabEnabled(i, True)
+            else:
+                self.tab_widget.setTabEnabled(i, False)
+        
+        # Also disable the start button until license check completes
+        # Or at least change its text to reflect waiting state
+        self.start_button.setText("Checking License...")
+        self.start_button.setEnabled(False)
+        self.subtitle_label.setText("License check in progress...")
+        self.subtitle_label.setStyleSheet("color: orange;")
 
     def lock_ui(self):
         """Disables features when the license is invalid."""
@@ -268,8 +295,62 @@ class OMRApp(QMainWindow):
         if hasattr(self, 'registration_page') and self.registration_page:
             self.registration_page.update_status(is_valid, message)
 
+def create_desktop_shortcut():
+    """
+    Creates a desktop shortcut for the application.
+    Requires the pywin32 library.
+    """
+    try:
+        import os
+        import sys
+        # pywin32 is required for this to work. It's included in the build.
+        import win32com.client
+        import pythoncom
+
+        # Initialize the COM libraries
+        pythoncom.CoInitialize()
+
+        # Get paths
+        desktop = os.path.join(os.path.join(os.environ['USERPROFILE']), 'Desktop')
+        target_path = sys.executable
+        shortcut_path = os.path.join(desktop, "OptiMark Pro.lnk")
+        icon_path = resource_path('images/optimark.ico')
+
+        # Create shortcut object
+        shell = win32com.client.Dispatch("WScript.Shell")
+        shortcut = shell.CreateShortCut(shortcut_path)
+        shortcut.Targetpath = target_path
+        shortcut.IconLocation = icon_path
+        shortcut.WorkingDirectory = os.path.dirname(target_path)
+        shortcut.Description = "OptiMark Pro OMR Sheet Scanner"
+        shortcut.save()
+        
+        # Uninitialize the COM libraries
+        pythoncom.CoUninitialize()
+        print(f"Shortcut created at {shortcut_path}")
+    except Exception as e:
+        print(f"Failed to create desktop shortcut: {e}")
+        # Optionally show a message box to the user
+        error_box = QMessageBox()
+        error_box.setIcon(QMessageBox.Icon.Warning)
+        error_box.setText(f"Could not create desktop shortcut.\n\nReason: {e}")
+        error_box.setWindowTitle("Shortcut Creation Failed")
+        error_box.exec()
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # --- First Run Desktop Shortcut Logic ---
+    settings = QSettings("OptiMarkPro", "OptiMarkPro")
+    if settings.value("first_run_complete", "false").lower() == "false":
+        reply = QMessageBox.question(None, 'Create Shortcut', 
+                                     'Do you want to create a desktop shortcut for OptiMark Pro?',
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            create_desktop_shortcut()
+        # Set the flag to true so this dialog doesn't appear again
+        settings.setValue("first_run_complete", "true")
 
     # Create and show splash screen
     splash_pix = QPixmap(resource_path("images/com_flash.png"))
@@ -284,6 +365,6 @@ if __name__ == "__main__":
         splash.close()
         window.showMaximized()
 
-    QTimer.singleShot(3000, show_main_window) # 3 seconds delay
+    QTimer.singleShot(1000, show_main_window) # 1 seconds delay
 
     sys.exit(app.exec())

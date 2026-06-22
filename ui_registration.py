@@ -150,7 +150,10 @@ class RegistrationPage(QWidget):
         except requests.exceptions.RequestException as e:
             self.show_message("Network Error", f"Could not connect to the license server: {e}")
         except json.JSONDecodeError:
-            self.show_message("Server Error", "Received an invalid response from the server.")
+            error_msg = f"Received an invalid response from the server. (Response code: {response.status_code})"
+            if len(response.text) < 200:
+                error_msg += f"\nResponse: {response.text}"
+            self.show_message("Server Error", error_msg)
         except Exception as e:
             self.show_message("Error", f"An unexpected error occurred: {e}")
 

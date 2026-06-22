@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
                              QGraphicsView, QGraphicsScene, QFileDialog, QMessageBox, QGraphicsPixmapItem, QInputDialog,
                              QSplitter, QScrollArea, QCheckBox, QButtonGroup, QLineEdit, QGroupBox, QSlider, QToolButton, QGraphicsItem,
-                             QGridLayout, QRadioButton, QComboBox, QApplication, QTextEdit, QDialog, QTabWidget, QFormLayout, QDialogButtonBox)
+                             QGridLayout, QRadioButton, QComboBox, QApplication, QTextEdit, QDialog, QTabWidget, QFormLayout, QDialogButtonBox, QListWidget)
 from PyQt6.QtGui import QImage, QPixmap, QColor, QBrush, QPen, QPolygonF
 from PyQt6.QtCore import Qt, QRectF, QPointF, QEvent, QSettings, QDateTime
 import sys
@@ -11,9 +11,11 @@ import numpy as np
 import datetime
 import os
 from core_omr import OMREngine
+from scanner_manager import ScannerManager
 from theme import apply_stylesheet_and_floatation
 from directory_manager import get_template_dir, get_answer_key_dir
 from settings_manager import save_last_path, load_last_path
+from cache_manager import apply_identifier_reference
 
 
 class ManualKeyCreatorDialog(QDialog):
@@ -144,10 +146,12 @@ class ManualKeyCreatorDialog(QDialog):
         # 1. Gather Identifiers
         identifiers = {}
         for name, widget in self.identifier_edits.items():
+            scanned_value = ""
             if isinstance(widget, QComboBox):
-                identifiers[name] = widget.currentText()
+                scanned_value = widget.currentText()
             else: # QLineEdit
-                identifiers[name] = widget.text()
+                scanned_value = widget.text()
+            identifiers[name] = apply_identifier_reference(name, scanned_value)
 
         # 2. Gather Answers
         answers = {}
@@ -182,8 +186,22 @@ class ManualKeyCreatorDialog(QDialog):
         save_path = os.path.join(answer_key_dir, f"{filename}.json")
 
         dialog_key = "Save Manual Answer Key"
-        initial_path = load_last_path(dialog_key) or save_path
-        path, _ = QFileDialog.getSaveFileName(self, dialog_key, initial_path, "JSON Files (*.json)")
+        
+        # Determine the initial directory for the QFileDialog
+        last_saved_path = load_last_path(dialog_key)
+        if last_saved_path and os.path.isfile(last_saved_path):
+            initial_dir = os.path.dirname(last_saved_path)
+        else:
+            initial_dir = get_answer_key_dir()
+
+        # The suggested filename should ALWAYS be based on the current identifiers
+        suggested_filename_with_ext = f"{filename}.json"
+        
+        # Combine the initial directory with the suggested filename
+        # QFileDialog.getSaveFileName expects a full path for the initial filename suggestion
+        full_initial_path_suggestion = os.path.join(initial_dir, suggested_filename_with_ext)
+
+        path, _ = QFileDialog.getSaveFileName(self, dialog_key, full_initial_path_suggestion, "JSON Files (*.json)")
 
         if path:
             save_last_path(dialog_key, path)
@@ -274,6 +292,8 @@ class AnswerKeyScannerWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.engine = OMREngine()
+        self.image_paths = [] # List to store paths of all loaded images
+        self.current_image_index = -1 # Index of the image currently being processed
         main_layout = QVBoxLayout(self)
         
         toolbar_layout = QHBoxLayout()
@@ -282,6 +302,18 @@ class AnswerKeyScannerWindow(QWidget):
         self.btn_load_image.setMinimumHeight(50)
         self.btn_load_image.clicked.connect(self.load_image)
         toolbar_layout.addWidget(self.btn_load_image)
+
+        self.btn_prev_image = QPushButton("Previous Image")
+        self.btn_prev_image.setMinimumHeight(50)
+        self.btn_prev_image.clicked.connect(self._load_previous_image)
+        self.btn_prev_image.setEnabled(False) # Disabled until images are loaded
+        toolbar_layout.addWidget(self.btn_prev_image)
+
+        self.btn_next_image = QPushButton("Next Image")
+        self.btn_next_image.setMinimumHeight(50)
+        self.btn_next_image.clicked.connect(self._load_next_image)
+        self.btn_next_image.setEnabled(False) # Disabled until images are loaded
+        toolbar_layout.addWidget(self.btn_next_image)
 
         self.btn_create_manual_key = QPushButton("Create Answer Key")
         self.btn_create_manual_key.setMinimumHeight(50)
@@ -327,11 +359,20 @@ class AnswerKeyScannerWindow(QWidget):
         # Main 3-panel splitter
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # --- 1. Left Panel (Settings + Log) ---
+        # --- 1. Left Panel (Settings + Log + Image List) ---
         left_panel_widget = QWidget()
         left_panel_widget.setObjectName("scanner_left_panel")
         left_panel_layout = QVBoxLayout(left_panel_widget)
         left_panel_layout.setContentsMargins(0,0,0,0)
+
+        # Image List
+        self.image_list_widget = QListWidget()
+        self.image_list_widget.setMinimumHeight(100)
+        self.image_list_widget.currentItemChanged.connect(self._on_image_list_selection_changed)
+        image_list_group = QGroupBox("Loaded Images")
+        image_list_layout = QVBoxLayout(image_list_group)
+        image_list_layout.addWidget(self.image_list_widget)
+        left_panel_layout.addWidget(image_list_group)
 
         controls_scroll = QScrollArea()
         controls_scroll.setWidgetResizable(True)
@@ -513,14 +554,72 @@ class AnswerKeyScannerWindow(QWidget):
     def load_image(self):
         dialog_key = "Load Answer Key Image"
         initial_path = load_last_path(dialog_key)
-        path, _ = QFileDialog.getOpenFileName(self, dialog_key, initial_path, "Image Files (*.png *.jpg *.bmp)")
-        if path:
-            save_last_path(dialog_key, path)
-            self.reset_state(full_reset=True); self.current_image = cv2.imread(path)
-            if self.current_image is None: QMessageBox.critical(self, "Error", f"Could not read image: {path}"); self.reset_state(); return
-            self.display_image(self.current_image)
-            self.log(f"Image loaded: {path}")
-            self._load_master_template()
+        # Allow multiple files to be selected
+        paths, _ = QFileDialog.getOpenFileNames(self, dialog_key, initial_path, "Image Files (*.png *.jpg *.bmp)")
+        
+        if paths:
+            save_last_path(dialog_key, os.path.dirname(paths[0]))
+            self.image_paths = sorted(paths) # Store all selected paths
+            self.current_image_index = 0 # Start with the first image
+            
+            # Populate the image list widget
+            self.image_list_widget.clear()
+            for p in self.image_paths:
+                self.image_list_widget.addItem(os.path.basename(p))
+            
+            self._load_current_image_for_processing()
+            self._update_navigation_buttons_state()
+            self.log(f"Loaded {len(self.image_paths)} images.")
+        else:
+            self.log("No images selected.")
+
+    def _load_current_image_for_processing(self):
+        if not self.image_paths or not (0 <= self.current_image_index < len(self.image_paths)):
+            self.reset_state(full_reset=True)
+            self.log("No image to process or invalid index.")
+            return
+
+        image_path = self.image_paths[self.current_image_index]
+        self.image_list_widget.setCurrentRow(self.current_image_index) # Select in list widget
+
+        self.reset_state(full_reset=False) # Keep template data for now
+        self.current_image = cv2.imread(image_path)
+        if self.current_image is None:
+            QMessageBox.critical(self, "Error", f"Could not read image: {image_path}")
+            self.reset_state(full_reset=True)
+            return
+        
+        self.display_image(self.current_image)
+        self.log(f"Processing image {self.current_image_index + 1}/{len(self.image_paths)}: {os.path.basename(image_path)}")
+        self._load_master_template() # This will try to auto-detect corners and scan
+
+    def _load_next_image(self):
+        if self.current_image_index < len(self.image_paths) - 1:
+            self.current_image_index += 1
+            self._load_current_image_for_processing()
+            self._update_navigation_buttons_state()
+        else:
+            self.log("No more images to process.")
+
+    def _load_previous_image(self):
+        if self.current_image_index > 0:
+            self.current_image_index -= 1
+            self._load_current_image_for_processing()
+            self._update_navigation_buttons_state()
+        else:
+            self.log("Already at the first image.")
+
+    def _update_navigation_buttons_state(self):
+        self.btn_prev_image.setEnabled(self.current_image_index > 0)
+        self.btn_next_image.setEnabled(self.current_image_index < len(self.image_paths) - 1)
+        
+    def _on_image_list_selection_changed(self, current, previous):
+        if current:
+            new_index = self.image_list_widget.row(current)
+            if new_index != self.current_image_index:
+                self.current_image_index = new_index
+                self._load_current_image_for_processing()
+                self._update_navigation_buttons_state()
 
     def _load_master_template(self):
         settings = QSettings("OptiMark Pro", "Defaults")
@@ -535,7 +634,7 @@ class AnswerKeyScannerWindow(QWidget):
                      self._create_right_panel_widgets()
                      self.run_auto_corner_detection()
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load or parse master template: {e}")
+                QMessageBox.critical(self, "Error", f"Failed to load or parse master template: {str(e)}")
                 self.template_data = None
         else:
             self.log("Master template not set or not found.")
@@ -564,7 +663,7 @@ class AnswerKeyScannerWindow(QWidget):
             self._create_right_panel_widgets()
             self.run_auto_corner_detection()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load or parse template: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to load or parse template: {str(e)}")
 
     def run_auto_corner_detection(self):
         for item in self.corner_handles: self.scene.removeItem(item)
@@ -627,8 +726,8 @@ class AnswerKeyScannerWindow(QWidget):
             self.btn_save.setEnabled(True)
             self.btn_rescan.setEnabled(True)
         except Exception as e:
-            self.log(f"Processing Error: {e}")
-            QMessageBox.critical(self, "Processing Error", f"An error occurred during scanning:\n{e}")
+            self.log(f"Processing Error: {str(e)}")
+            QMessageBox.critical(self, "Processing Error", f"An error occurred during scanning:\n{str(e)}")
 
     def _get_processed_preview_image(self, image, params):
         if image is None: return None
@@ -784,19 +883,44 @@ class AnswerKeyScannerWindow(QWidget):
 
             if roi_data['type'] == 'Identifier':
                 value = ""
+                vals = roi_data.get('values', [])
                 if roi_data.get('order') == 'Column Wise':
                     mat = np.array(matrix)
                     if cols == 1 and mat.ndim == 2: # Single-choice dropdown
                         detected_indices = np.where(mat[:, 0] == 1)[0]
-                        value = roi_data['values'][detected_indices[0]] if len(detected_indices) == 1 else "MULTIPLE"
+                        if len(detected_indices) == 1:
+                            idx = detected_indices[0]
+                            value = vals[idx] if idx < len(vals) else "ERR"
+                        else:
+                            value = "MULTIPLE"
                     else: # Multi-digit textbox
-                        value = "".join(roi_data['values'][np.argmax(mat[:, c])] for c in range(cols)) if mat.ndim == 2 and mat.shape[1] == cols and all(np.sum(mat[:, c]) == 1 for c in range(cols)) else "ERROR"
+                        if mat.ndim == 2 and mat.shape[1] == cols and all(np.sum(mat[:, c]) == 1 for c in range(cols)):
+                            parts = []
+                            for c in range(cols):
+                                idx = np.argmax(mat[:, c])
+                                parts.append(vals[idx] if idx < len(vals) else "?")
+                            value = "".join(parts)
+                        else:
+                            value = "ERROR"
                 else: # Row Wise
                     if rows == 1 and len(matrix) > 0: # Single-choice dropdown
                         detected_indices = [i for i, x in enumerate(matrix[0]) if x == 1]
-                        value = roi_data['values'][detected_indices[0]] if len(detected_indices) == 1 else "MULTIPLE"
+                        if len(detected_indices) == 1:
+                            idx = detected_indices[0]
+                            value = vals[idx] if idx < len(vals) else "ERR"
+                        else:
+                            value = "MULTIPLE"
                     else:
-                        value = "".join(roi_data['values'][r.index(1)] for r in matrix if sum(r) == 1) if not any(sum(r) > 1 for r in matrix) else "MULTIPLE"
+                        parts = []
+                        for r in matrix:
+                            if sum(r) == 1:
+                                idx = r.index(1)
+                                parts.append(vals[idx] if idx < len(vals) else "?")
+                            elif sum(r) > 1:
+                                parts.append("*")
+                            else:
+                                parts.append("_")
+                        value = "".join(parts) if not any(p == "*" for p in parts) else "MULTIPLE"
                 
                 for r, row_vals in enumerate(matrix):
                     for c, is_filled in enumerate(row_vals):
@@ -806,7 +930,7 @@ class AnswerKeyScannerWindow(QWidget):
                             all_filled_bubbles_info.append({'coords': bubble_coords, 'correct': True})
 
                 self.scan_results['identifiers'][roi_name] = value
-                if "ERROR" in value or "MULTIPLE" in value:
+                if "ERROR" in value or "MULTIPLE" in value or "ERR" in value:
                     self.scan_results['errors'][roi_name] = f"Scan error ({value})"
                     self.log(f"Identifier scan error for '{roi_name}': {value}")
 
@@ -814,7 +938,7 @@ class AnswerKeyScannerWindow(QWidget):
                 start_q, options_map = roi_data.get('start_question', 1), roi_data.get('values', [chr(ord('A') + i) for i in range(cols)])
                 for r_idx in range(rows):
                     question_num_str = str(start_q + r_idx)
-                    detected_options = [options_map[c] for c, val in enumerate(matrix[r_idx]) if val == 1]
+                    detected_options = [options_map[c] for c, val in enumerate(matrix[r_idx]) if val == 1 and c < len(options_map)]
                     self.scan_results['answers'][question_num_str] = detected_options
                     for c_idx, is_filled in enumerate(matrix[r_idx]):
                         if is_filled and (coord_index := r_idx * cols + c_idx) < len(all_coords):
@@ -987,10 +1111,12 @@ class AnswerKeyScannerWindow(QWidget):
         # Explicitly gather the final values from the UI widgets at the moment of saving
         ids = {}
         for name, widget in self.identifier_widgets.items():
+            scanned_value = ""
             if isinstance(widget, IdentifierDropdownWidget):
-                ids[name] = widget.combo_box.currentText()
+                scanned_value = widget.combo_box.currentText()
             elif isinstance(widget, IdentifierEditWidget):
-                ids[name] = widget.value_edit.text()
+                scanned_value = widget.value_edit.text()
+            ids[name] = apply_identifier_reference(name, scanned_value)
 
         filename = self._generate_answer_key_filename(ids)
 
@@ -1005,8 +1131,22 @@ class AnswerKeyScannerWindow(QWidget):
         save_path = os.path.join(answer_key_dir, f"{filename}.json")
 
         dialog_key = "Save Answer Key"
-        initial_path = load_last_path(dialog_key) or save_path
-        path, _ = QFileDialog.getSaveFileName(self, dialog_key, initial_path, "JSON Files (*.json)")
+        
+        # Determine the initial directory for the QFileDialog
+        last_saved_path = load_last_path(dialog_key)
+        if last_saved_path and os.path.isfile(last_saved_path):
+            initial_dir = os.path.dirname(last_saved_path)
+        else:
+            initial_dir = get_answer_key_dir()
+
+        # The suggested filename should ALWAYS be based on the current identifiers
+        suggested_filename_with_ext = f"{filename}.json"
+        
+        # Combine the initial directory with the suggested filename
+        # QFileDialog.getSaveFileName expects a full path for the initial filename suggestion
+        full_initial_path_suggestion = os.path.join(initial_dir, suggested_filename_with_ext)
+
+        path, _ = QFileDialog.getSaveFileName(self, dialog_key, full_initial_path_suggestion, "JSON Files (*.json)")
         if path:
             save_last_path(dialog_key, path)
             try:

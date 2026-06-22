@@ -1,6 +1,9 @@
 import cv2
 import numpy as np
-from pyzbar.pyzbar import decode
+try:
+    from pyzbar.pyzbar import decode
+except Exception:
+    def decode(image): return []
 from corner_detector import CornerDetector
 
 class OMREngine:

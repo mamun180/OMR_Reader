@@ -1208,10 +1208,17 @@ class TemplateBuilder(QWidget):
             'rois': rois_to_save
         }
 
-        template_dir = get_template_dir()
         dialog_key = "Save Template"
-        initial_path = load_last_path(dialog_key) or template_dir
-        path, _ = QFileDialog.getSaveFileName(self, dialog_key, initial_path, "JSON Files (*.json)")
+        # The initial_path should be a directory, not a full file path, to allow the dialog to suggest a new name.
+        last_saved_path = load_last_path(dialog_key)
+        if last_saved_path and os.path.isfile(last_saved_path):
+            initial_dir = os.path.dirname(last_saved_path)
+            initial_filename = os.path.basename(last_saved_path)
+        else:
+            initial_dir = get_template_dir()
+            initial_filename = "new_template.json" # Suggest a default new name
+
+        path, _ = QFileDialog.getSaveFileName(self, dialog_key, os.path.join(initial_dir, initial_filename), "JSON Files (*.json)")
         if path:
             save_last_path(dialog_key, path)
             try:
@@ -1401,8 +1408,8 @@ class TemplateBuilder(QWidget):
             self.set_interaction_mode(self.interaction_mode_group.checkedId())
 
         except Exception as e:
-            self.log(f"Error loading template: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to load template:\n{e}")
+            self.log(f"Error loading template: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to load template:\n{str(e)}")
 
     def draw_roi_grid(self, roi_data, roi_index):
         if not (0 <= roi_index < len(self.roi_items)):
